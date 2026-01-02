@@ -28,24 +28,28 @@ export default function CreatePondScreen() {
     try {
       setFetchingBodegas(true);
       
+      // 1. Obtener usuario actual
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
         router.replace("/(auth)/login");
         return;
       }
 
+      // 2. Obtener la finca del dueño (más flexible para evitar el error de farmId nulo)
       const { data: farm, error: farmError } = await supabase
         .from("farms")
         .select("id")
         .eq("owner_id", user.id)
-        .eq("active", true)
+        .limit(1)
         .single();
 
       if (farmError || !farm) {
-        throw new Error("No se pudo obtener la finca activa.");
+        console.error("Error cargando finca:", farmError);
+        throw new Error("No se encontró una finca vinculada a tu cuenta.");
       }
       setFarmId(farm.id);
 
+      // 3. Obtener bodegas registradas para esta finca
       const { data: inventoryData, error: invError } = await supabase
         .from("inventory")
         .select("id, item_name, is_satellite")
@@ -53,11 +57,21 @@ export default function CreatePondScreen() {
         .order("is_satellite", { ascending: true });
 
       if (invError) throw invError;
-      setBodegas(inventoryData || []);
+      
+      if (!inventoryData || inventoryData.length === 0) {
+        Alert.alert(
+          "Atención", 
+          "Primero debes crear al menos una bodega en el Inventario para vincular el estanque."
+        );
+        router.replace("/(owner)/inventory");
+        return;
+      }
 
-    } catch {
-      Alert.alert("Error", "No se pudo configurar la información inicial.");
-      router.replace("/(owner)/ponds");
+      setBodegas(inventoryData);
+
+    } catch (error: any) {
+      Alert.alert("Error de Configuración", error.message);
+      router.back();
     } finally {
       setFetchingBodegas(false);
     }
@@ -68,31 +82,40 @@ export default function CreatePondScreen() {
   }, [loadInitialData]);
 
   const createPond = async () => {
+    // Validaciones
     if (!pondName.trim()) {
       return Alert.alert("Campo Requerido", "Ingresa el nombre del estanque.");
     }
     if (!selectedInventoryId) {
       return Alert.alert("Bodega Requerida", "Asigna una bodega para este estanque.");
     }
-    if (!farmId) return;
+    if (!farmId) {
+      return Alert.alert("Error", "No se detectó el ID de la finca. Recarga la pantalla.");
+    }
 
     setLoading(true);
 
     try {
+      // Realizar el INSERT
       const { error } = await supabase.from("ponds").insert({
         name: pondName.trim(),
         farm_id: farmId,
         inventory_id: selectedInventoryId,
         active: true,
+        current_stock: 0, // Iniciamos en cero
       });
 
-      if (error) throw error;
+      if (error) {
+        console.error("Error de Supabase al insertar estanque:", error);
+        throw error;
+      }
 
       Alert.alert("¡Éxito!", "Estanque creado y vinculado correctamente.");
       router.replace("/(owner)/ponds");
       
-    } catch {
-      Alert.alert("Error", "No se pudo guardar el estanque.");
+    } catch (error: any) {
+      console.error("Error completo:", error);
+      Alert.alert("Error al Guardar", error.message || "No se pudo conectar con el servidor.");
     } finally {
       setLoading(false);
     }

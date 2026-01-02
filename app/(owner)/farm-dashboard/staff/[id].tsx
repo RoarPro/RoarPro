@@ -11,6 +11,13 @@ export default function FarmStaffScreen() {
   const [loading, setLoading] = useState(true);
 
   const fetchStaff = useCallback(async () => {
+    // 🛡️ BLOQUEO DE SEGURIDAD PARA RUTAS NO VÁLIDAS (UUID Check)
+    const invalidIds = ["staff", "ponds", "inventory", "undefined", "[id]"];
+    if (!id || typeof id !== 'string' || invalidIds.includes(id)) {
+      setLoading(false);
+      return;
+    }
+
     try {
       setLoading(true);
       
@@ -38,7 +45,7 @@ export default function FarmStaffScreen() {
 
       if (profileError) throw profileError;
 
-      // PASO 3: Formatear los datos para que el FlatList los procese igual que antes
+      // PASO 3: Formatear los datos
       const formattedStaff = profiles?.map(profile => ({
         user_id: profile.id,
         profiles: profile
@@ -47,8 +54,8 @@ export default function FarmStaffScreen() {
       setStaff(formattedStaff);
     } catch (error: any) {
       console.error("Error cargando empleados:", error.message);
-      // Solo mostramos alerta si es un error real de red/permisos, no si la lista está vacía
-      if (error.code !== 'PGRST116') { 
+      // Solo mostramos alerta si no es un error de ID vacío o mal formado
+      if (!error.message.includes("uuid")) {
         Alert.alert("Error", "No se pudieron cargar los empleados");
       }
     } finally {
@@ -108,10 +115,13 @@ export default function FarmStaffScreen() {
         )}
       </View>
 
-      {/* Botón para abrir el formulario de Nuevo Empleado */}
+      {/* Botón mejorado para pasar el ID correctamente */}
       <TouchableOpacity 
         style={styles.addButton}
-        onPress={() => router.push(`/(owner)/farm-dashboard/staff/add-employee?farmId=${id}` as any)}
+        onPress={() => router.push({
+            pathname: "/(owner)/farm-dashboard/staff/add-employee",
+            params: { farmId: id }
+        } as any)}
       >
         <Ionicons name="person-add" size={24} color="white" />
         <Text style={styles.addButtonText}>Agregar Empleado</Text>
@@ -120,6 +130,7 @@ export default function FarmStaffScreen() {
   );
 }
 
+// ... Estilos (se mantienen igual)
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F2F5F7" },
   center: { flex: 1, justifyContent: "center", alignItems: "center" },

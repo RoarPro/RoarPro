@@ -19,7 +19,7 @@ export default function FarmDashboard() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  // Estados para estadísticas reales
+  // Estados para estadísticas
   const [stats, setStats] = useState({
     totalFish: 0,
     totalFood: 0,
@@ -27,6 +27,13 @@ export default function FarmDashboard() {
   });
 
   const fetchDashboardData = useCallback(async () => {
+    // 🛡️ BLOQUEO DE SEGURIDAD PARA RUTAS NO VÁLIDAS
+    const invalidIds = ["staff", "ponds", "inventory", "undefined", "[id]"];
+    if (!id || typeof id !== 'string' || invalidIds.includes(id)) {
+      setLoading(false);
+      return;
+    }
+
     try {
       setLoading(true);
       
@@ -36,10 +43,11 @@ export default function FarmDashboard() {
         .select("*")
         .eq("id", id)
         .single();
+      
       if (farmError) throw farmError;
       setFarm(farmData);
 
-      // 2. Calcular total de peces (Suma de current_stock en ponds)
+      // 2. Calcular total de peces
       const { data: pondsData } = await supabase
         .from("ponds")
         .select("current_stock")
@@ -47,7 +55,7 @@ export default function FarmDashboard() {
       
       const totalFish = pondsData?.reduce((acc, curr) => acc + (curr.current_stock || 0), 0) || 0;
 
-      // 3. Obtener inventario total (Suma de cantidad en todas las bodegas de esta finca)
+      // 3. Obtener inventario total
       const { data: invData } = await supabase
         .from("inventory")
         .select("quantity")
@@ -71,8 +79,8 @@ export default function FarmDashboard() {
         todaySales
       });
 
-    } catch (error) {
-      console.error("Error cargando Dashboard:", error);
+    } catch (error: any) {
+      console.error("Error cargando Dashboard:", error.message);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -120,15 +128,20 @@ export default function FarmDashboard() {
             icon="water" 
             label="Estanques" 
             color="#0066CC" 
-            onPress={() => router.push({ pathname: "/(owner)/farm-dashboard/ponds", params: { farmId: id } } as any)} 
+            onPress={() => router.push({ 
+                pathname: "/(owner)/ponds", 
+                params: { farmId: id } 
+            } as any)} 
           />
           
-          {/* RUTA ACTUALIZADA AL NUEVO MÓDULO DE INVENTARIO */}
           <MenuButton 
             icon="clipboard" 
             label="Inventario" 
             color="#003366" 
-            onPress={() => router.push({ pathname: "/(owner)/inventory", params: { farmId: id } } as any)} 
+            onPress={() => router.push({ 
+                pathname: "/(owner)/inventory", 
+                params: { farmId: id } 
+            } as any)} 
           />
           
           <MenuButton icon="cart" label="Ventas" color="#00C853" onPress={() => {/* Próxima pantalla */}} />
@@ -137,7 +150,10 @@ export default function FarmDashboard() {
             icon="people" 
             label="Empleados" 
             color="#FFA000" 
-            onPress={() => router.push(`/(owner)/farm-dashboard/staff/${id}` as any)} 
+            onPress={() => router.push({
+                pathname: "/(owner)/farm-dashboard/staff/[id]",
+                params: { id: id as string }
+            } as any)} 
           />
           
           <MenuButton icon="analytics" label="Reportes" color="#6B46C1" onPress={() => {/* Próxima pantalla */}} />
@@ -158,7 +174,8 @@ export default function FarmDashboard() {
   );
 }
 
-// Sub-componentes
+// --- SUB-COMPONENTES ---
+
 const MenuButton = ({ icon, label, color, onPress }: any) => (
   <TouchableOpacity style={styles.menuBox} onPress={onPress}>
     <View style={[styles.iconBox, { backgroundColor: color }]}>
@@ -174,6 +191,8 @@ const StatItem = ({ label, value }: any) => (
     <Text style={styles.statLabel}>{label}</Text>
   </View>
 );
+
+// --- ESTILOS ---
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F2F5F7" },

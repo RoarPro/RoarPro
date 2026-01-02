@@ -4,16 +4,16 @@ import { Picker } from "@react-native-picker/picker";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
-  ActivityIndicator,
-  Alert,
-  FlatList,
-  Modal,
-  StyleSheet,
-  Switch,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
+    ActivityIndicator,
+    Alert,
+    FlatList,
+    Modal,
+    StyleSheet,
+    Switch,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
 } from "react-native";
 
 export default function InventoryScreen() {
@@ -30,24 +30,26 @@ export default function InventoryScreen() {
     const [quantity, setQuantity] = useState("");
     const [unit, setUnit] = useState("kg");
     
-    // Nuevos campos para Bodegas Satélite
+    // Bodegas Satélite
     const [isSatellite, setIsSatellite] = useState(false);
     const [parentId, setParentId] = useState<string | null>(null);
 
     const fetchInventory = useCallback(async () => {
+        if (!farmId) return;
         try {
             setLoading(true);
             const { data, error } = await supabase
                 .from("inventory")
                 .select("*")
                 .eq("farm_id", farmId)
-                .order("is_satellite", { ascending: true }) // Globales primero
+                .order("is_satellite", { ascending: true }) 
                 .order("item_name", { ascending: true });
 
             if (error) throw error;
             setInventory(data || []);
         } catch (error: any) {
-            Alert.alert("Error", error.message);
+            console.error("Error fetch:", error.message);
+            Alert.alert("Error", "No se pudo cargar el inventario.");
         } finally {
             setLoading(false);
         }
@@ -58,37 +60,51 @@ export default function InventoryScreen() {
     }, [fetchInventory]);
 
     const handleSaveItem = async () => {
-        if (!itemName || !quantity) {
+        // Validaciones Críticas
+        if (!itemName.trim() || !quantity) {
             Alert.alert("Error", "El nombre y la cantidad son obligatorios");
             return;
         }
 
+        if (!farmId) {
+            Alert.alert("Error", "ID de finca no encontrado. Intente recargar.");
+            return;
+        }
+
         try {
-            const itemData = {
+            const parsedQuantity = parseFloat(quantity) || 0;
+            
+            // Construimos el objeto de datos
+            const itemData: any = {
                 farm_id: farmId,
-                item_name: itemName,
-                quantity: parseFloat(quantity),
-                unit: unit,
+                item_name: itemName.trim(),
+                quantity: parsedQuantity,
+                unit: unit.trim(),
                 is_satellite: isSatellite,
-                parent_id: isSatellite ? parentId : null, // Solo tiene padre si es satélite
+                parent_id: isSatellite ? parentId : null, 
             };
 
             if (editingId) {
+                // ACTUALIZAR EXISTENTE
                 const { error } = await supabase
                     .from("inventory")
                     .update(itemData)
                     .eq("id", editingId);
                 if (error) throw error;
             } else {
-                const { error } = await supabase.from("inventory").insert([itemData]);
+                // INSERTAR NUEVO (Aseguramos que sea una fila nueva)
+                const { error } = await supabase
+                    .from("inventory")
+                    .insert([itemData]); // Pasamos como array para mayor seguridad
                 if (error) throw error;
             }
 
-            Alert.alert("¡Éxito!", editingId ? "Configuración actualizada" : "Registro exitoso");
+            Alert.alert("¡Éxito!", editingId ? "Actualizado correctamente" : "Bodega creada con éxito");
             closeModal();
             fetchInventory();
         } catch (error: any) {
-            Alert.alert("Error", error.message);
+            console.error("Error guardando:", error.message);
+            Alert.alert("Error", "No se pudo guardar la bodega. Verifique los datos.");
         }
     };
 
@@ -112,7 +128,7 @@ export default function InventoryScreen() {
         setParentId(null);
     };
 
-    // Filtramos los productos que pueden ser "Padres" (Globales)
+    // Solo los ítems que NO son satélites pueden ser "Padres" (Productos Globales)
     const globalItems = inventory.filter(i => !i.is_satellite);
 
     const renderItemCard = ({ item }: { item: any }) => (
@@ -120,18 +136,21 @@ export default function InventoryScreen() {
             <View style={styles.cardInfo}>
                 <View style={[styles.iconContainer, item.is_satellite && styles.satelliteIcon]}>
                     <Ionicons 
-                        name={item.is_satellite ? "location" : "cube"} 
+                        name={item.is_satellite ? "location" : "business"} 
                         size={24} 
                         color={item.is_satellite ? "#38A169" : "#003366"} 
                     />
                 </View>
                 <View style={{ flex: 1, marginLeft: 12 }}>
                     <Text style={styles.itemName}>
-                        {item.item_name} {item.is_satellite && "(Satélite)"}
+                        {item.item_name} {item.is_satellite && "📍"}
                     </Text>
                     <Text style={styles.itemDate}>
                         Stock: {item.quantity} {item.unit}
                     </Text>
+                    {item.is_satellite && (
+                        <Text style={{fontSize: 10, color: '#38A169'}}>Bodega Satélite</Text>
+                    )}
                 </View>
                 <Ionicons name="chevron-forward" size={20} color="#CBD5E0" />
             </View>
@@ -151,14 +170,16 @@ export default function InventoryScreen() {
             </View>
 
             {loading ? (
-                <ActivityIndicator size="large" color="#003366" style={{ marginTop: 50 }} />
+                <View style={styles.center}>
+                    <ActivityIndicator size="large" color="#003366" />
+                </View>
             ) : (
                 <FlatList
                     data={inventory}
                     keyExtractor={(item) => item.id}
                     renderItem={renderItemCard}
                     contentContainerStyle={styles.listContent}
-                    ListEmptyComponent={<Text style={styles.emptyText}>No hay insumos registrados.</Text>}
+                    ListEmptyComponent={<Text style={styles.emptyText}>No hay bodegas o insumos registrados.</Text>}
                 />
             )}
 
@@ -166,11 +187,11 @@ export default function InventoryScreen() {
                 <Ionicons name="add" size={30} color="white" />
             </TouchableOpacity>
 
-            <Modal visible={modalVisible} animationType="slide" transparent={true}>
+            <Modal visible={modalVisible} animationType="fade" transparent={true}>
                 <View style={styles.modalOverlay}>
                     <View style={styles.modalContent}>
                         <View style={styles.modalHeader}>
-                            <Text style={styles.modalTitle}>{editingId ? "Editar Bodega" : "Nueva Bodega"}</Text>
+                            <Text style={styles.modalTitle}>{editingId ? "Editar Configuración" : "Añadir Bodega"}</Text>
                         </View>
 
                         <View style={styles.switchRow}>
@@ -178,10 +199,10 @@ export default function InventoryScreen() {
                             <Switch value={isSatellite} onValueChange={setIsSatellite} />
                         </View>
 
-                        <Text style={styles.label}>Nombre de la Bodega / Producto</Text>
+                        <Text style={styles.label}>Nombre de la Bodega o Producto</Text>
                         <TextInput
                             style={styles.input}
-                            placeholder={isSatellite ? "Ej: Bodega La Vega" : "Ej: Alimento Engorde 25%"}
+                            placeholder={isSatellite ? "Ej: Bodega Sector Norte" : "Ej: Concentrado Iniciación"}
                             value={itemName}
                             onChangeText={setItemName}
                         />
@@ -205,7 +226,7 @@ export default function InventoryScreen() {
 
                         <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
                             <View style={{ width: '60%' }}>
-                                <Text style={styles.label}>Cantidad Actual</Text>
+                                <Text style={styles.label}>Stock Actual</Text>
                                 <TextInput
                                     style={styles.input}
                                     placeholder="0.00"
@@ -227,7 +248,7 @@ export default function InventoryScreen() {
 
                         <View style={styles.modalButtons}>
                             <TouchableOpacity style={[styles.modalButton, styles.cancelButton]} onPress={closeModal}>
-                                <Text style={styles.cancelButtonText}>Cancelar</Text>
+                                <Text style={styles.cancelButtonText}>Cerrar</Text>
                             </TouchableOpacity>
                             <TouchableOpacity style={[styles.modalButton, styles.saveButton]} onPress={handleSaveItem}>
                                 <Text style={styles.saveButtonText}>Guardar</Text>
@@ -242,23 +263,24 @@ export default function InventoryScreen() {
 
 const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: "#F7FAFC" },
+    center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
     header: { backgroundColor: "#003366", paddingTop: 60, paddingBottom: 20, paddingHorizontal: 20, flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
     headerTitle: { color: "white", fontSize: 20, fontWeight: "bold" },
     listContent: { padding: 20 },
     card: { backgroundColor: "white", borderRadius: 12, padding: 16, marginBottom: 12, elevation: 2 },
     cardInfo: { flexDirection: "row", alignItems: "center" },
     iconContainer: { backgroundColor: "#EDF2F7", padding: 10, borderRadius: 10 },
-    satelliteIcon: { backgroundColor: "#C6F6D5" }, // Fondo verde para satélites
+    satelliteIcon: { backgroundColor: "#C6F6D5" }, 
     itemName: { fontSize: 16, fontWeight: "bold", color: "#2D3748" },
     itemDate: { fontSize: 14, color: "#718096", marginTop: 2 },
     fab: { position: "absolute", bottom: 30, right: 30, backgroundColor: "#003366", width: 60, height: 60, borderRadius: 30, justifyContent: "center", alignItems: "center", elevation: 5 },
     emptyText: { textAlign: "center", marginTop: 50, color: "#718096" },
-    modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "center", padding: 20 },
+    modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.6)", justifyContent: "center", padding: 20 },
     modalContent: { backgroundColor: "white", borderRadius: 20, padding: 25 },
     modalHeader: { marginBottom: 20 },
-    modalTitle: { fontSize: 22, fontWeight: "bold", color: "#2D3748" },
+    modalTitle: { fontSize: 20, fontWeight: "bold", color: "#2D3748" },
     switchRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15, padding: 10, backgroundColor: '#F7FAFC', borderRadius: 10 },
-    label: { fontSize: 14, fontWeight: "bold", color: "#4A5568", marginBottom: 8 },
+    label: { fontSize: 13, fontWeight: "bold", color: "#4A5568", marginBottom: 6 },
     input: { backgroundColor: "#F7FAFC", borderWidth: 1, borderColor: "#E2E8F0", borderRadius: 10, padding: 12, fontSize: 16, marginBottom: 15 },
     pickerWrapper: { borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 10, marginBottom: 15, backgroundColor: '#F7FAFC' },
     modalButtons: { flexDirection: "row", justifyContent: "space-between", marginTop: 10 },
