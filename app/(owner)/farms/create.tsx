@@ -25,6 +25,7 @@ export default function CreateFarmScreen() {
     setLoading(true);
 
     try {
+      // 1. Obtener la sesión actual para sacar el ID del usuario
       const { data: { session }, error: sessionError } = await supabase.auth.getSession();
 
       if (sessionError || !session) {
@@ -35,26 +36,30 @@ export default function CreateFarmScreen() {
 
       const userId = session.user.id;
 
-      // Enviamos AMBOS campos para evitar el error de "user_id is not null"
-      // y cumplir con las políticas RLS de Supabase.
+      // 2. INSERT CORREGIDO:
+      // Activamos 'user_id' ya que tu base de datos lo marca como obligatorio (NOT NULL)
       const { error } = await supabase.from("farms").insert([
         {
           name: name.trim(),
           owner_id: userId, 
-          user_id: userId,  
+          user_id: userId, // <--- ESTA LÍNEA ES LA QUE SOLUCIONA EL ERROR
           active: true,
         },
       ]);
 
       if (error) throw error;
 
+      // Éxito: Volvemos al Panel Principal
       router.replace("/(owner)/farms");
 
     } catch (error: any) {
       console.error("Error creando finca:", error.message);
       
       if (error.message.includes("violates row-level security")) {
-        Alert.alert("Error de Permisos", "Verifica las políticas RLS en Supabase.");
+        Alert.alert(
+          "Error de Permisos", 
+          "No tienes permiso para crear esta finca. Verifica el RLS en Supabase."
+        );
       } else {
         Alert.alert("Error", "No pudimos crear la finca: " + error.message);
       }
@@ -66,13 +71,13 @@ export default function CreateFarmScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.card}>
-        <Text style={styles.title}>Registrar Finca</Text>
+        <Text style={styles.title}>Nueva Finca</Text>
         <Text style={styles.subtitle}>
-          Escribe el nombre de tu explotación piscícola para comenzar a gestionar tus estanques.
+          Registra tu explotación para separar tus inventarios y estanques de forma organizada.
         </Text>
 
         <TextInput
-          placeholder="Ej: Finca La Esperanza"
+          placeholder="Ej: Hacienda El Recreo"
           value={name}
           onChangeText={setName}
           style={styles.input}
@@ -88,8 +93,16 @@ export default function CreateFarmScreen() {
           {loading ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={styles.buttonText}>Confirmar y Crear</Text>
+            <Text style={styles.buttonText}>Crear Finca</Text>
           )}
+        </TouchableOpacity>
+
+        <TouchableOpacity 
+          style={styles.backButton} 
+          onPress={() => router.back()}
+          disabled={loading}
+        >
+          <Text style={styles.backButtonText}>Cancelar</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -98,11 +111,13 @@ export default function CreateFarmScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F2F5F7", padding: 20, justifyContent: "center" },
-  card: { backgroundColor: "white", padding: 25, borderRadius: 20, elevation: 4, shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 8 },
+  card: { backgroundColor: "white", padding: 25, borderRadius: 24, elevation: 8, shadowColor: "#000", shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.1, shadowRadius: 12 },
   title: { fontSize: 26, fontWeight: "bold", color: "#003366", marginBottom: 10, textAlign: "center" },
-  subtitle: { fontSize: 14, color: "#666", textAlign: "center", marginBottom: 25, lineHeight: 20 },
-  input: { backgroundColor: "#E8ECF1", padding: 15, borderRadius: 12, marginBottom: 20, fontSize: 16, color: "#333", borderWidth: 1, borderColor: "#D1D9E0" },
-  button: { backgroundColor: "#0066CC", padding: 18, borderRadius: 12, alignItems: "center" },
-  buttonDisabled: { backgroundColor: "#A7C7E7" },
+  subtitle: { fontSize: 14, color: "#718096", textAlign: "center", marginBottom: 25, lineHeight: 20 },
+  input: { backgroundColor: "#F8FAFC", padding: 18, borderRadius: 15, marginBottom: 20, fontSize: 16, color: "#333", borderWidth: 1, borderColor: "#E2E8F0" },
+  button: { backgroundColor: "#0066CC", padding: 18, borderRadius: 15, alignItems: "center", elevation: 2 },
+  buttonDisabled: { backgroundColor: "#CBD5E0" },
   buttonText: { color: "#fff", fontSize: 16, fontWeight: "bold" },
+  backButton: { marginTop: 15, padding: 10, alignItems: "center" },
+  backButtonText: { color: "#718096", fontSize: 14, fontWeight: "500" }
 });

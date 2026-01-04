@@ -19,14 +19,15 @@ export default function FarmDashboard() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
+  // Estados con datos REALES
   const [stats, setStats] = useState({
-    totalFish: 0,
+    totalBiomass: 0,
     totalFood: 0,
-    todaySales: 0
+    activeAlerts: 0
   });
 
   const fetchDashboardData = useCallback(async () => {
-    // 🛡️ BLOQUEO DE SEGURIDAD MEJORADO
+    // Bloqueo de seguridad para rutas dinámicas
     const invalidIds = ["staff", "ponds", "inventory", "undefined", "[id]", "create"];
     if (!id || typeof id !== 'string' || invalidIds.includes(id)) {
       setLoading(false);
@@ -36,7 +37,7 @@ export default function FarmDashboard() {
     try {
       setLoading(true);
       
-      // 1. Detalles de la finca
+      // 1. Detalles de la finca específica
       const { data: farmData, error: farmError } = await supabase
         .from("farms")
         .select("*")
@@ -46,15 +47,19 @@ export default function FarmDashboard() {
       if (farmError) throw farmError;
       setFarm(farmData);
 
-      // 2. Total de peces de esta finca específica
-      const { data: pondsData } = await supabase
-        .from("ponds")
-        .select("current_stock")
-        .eq("farm_id", id);
+      // 2. BIOMASA REAL: Consultamos los lotes de peces (fish_batches) de ESTA finca
+      const { data: batches } = await supabase
+        .from("fish_batches")
+        .select("current_quantity, average_weight")
+        .eq("farm_id", id)
+        .eq("status", "active");
       
-      const totalFish = pondsData?.reduce((acc, curr) => acc + (curr.current_stock || 0), 0) || 0;
+      const totalBiomass = batches?.reduce((acc, batch) => {
+        const weightKg = (batch.average_weight || 0) / 1000;
+        return acc + ((batch.current_quantity || 0) * weightKg);
+      }, 0) || 0;
 
-      // 3. Inventario
+      // 3. INVENTARIO REAL: Solo de esta finca
       const { data: invData } = await supabase
         .from("inventory")
         .select("quantity")
@@ -62,10 +67,17 @@ export default function FarmDashboard() {
       
       const totalFood = invData?.reduce((acc, curr) => acc + (curr.quantity || 0), 0) || 0;
 
+      // 4. ALERTAS REALES: Consultamos tu tabla 'alerts' para esta finca
+      const { count: alertsCount } = await supabase
+        .from("alerts")
+        .select('*', { count: 'exact', head: true })
+        .eq("farm_id", id)
+        .eq("is_resolved", false);
+
       setStats({
-        totalFish,
-        totalFood,
-        todaySales: 0 // Aquí puedes añadir la lógica de ventas si ya tienes la tabla
+        totalBiomass: Number(totalBiomass.toFixed(1)),
+        totalFood: Number(totalFood.toFixed(1)),
+        activeAlerts: alertsCount || 0
       });
 
     } catch (error: any) {
@@ -99,20 +111,32 @@ export default function FarmDashboard() {
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
     >
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.push("/(owner)/farms/")}>
+        <TouchableOpacity onPress={() => router.push("/(owner)/farms/" as any)}>
           <Ionicons name="arrow-back" size={28} color="white" />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>{farm?.name || "Panel de Finca"}</Text>
+        <View style={styles.headerInfo}>
+          <Text style={styles.headerSubtitle}>Gestión de</Text>
+          <Text style={styles.headerTitle}>{farm?.name || "Finca"}</Text>
+        </View>
         <TouchableOpacity onPress={onRefresh}>
-          <Ionicons name="refresh" size={24} color="white" />
+          <Ionicons name="refresh-circle" size={32} color="white" />
         </TouchableOpacity>
       </View>
 
       <View style={styles.content}>
-        <Text style={styles.sectionTitle}>Gestión de Finca</Text>
+        {/* Tarjeta de Resumen Rápido */}
+        <View style={styles.statsCard}>
+          <Text style={styles.statsTitle}>Estado Actual</Text>
+          <View style={styles.statsRow}>
+            <StatItem label="Biomasa (kg)" value={stats.totalBiomass} color="#1E8E3E" />
+            <StatItem label="Alimento (kg)" value={stats.totalFood} color="#1A73E8" />
+            <StatItem label="Alertas" value={stats.activeAlerts} color={stats.activeAlerts > 0 ? "#D93025" : "#718096"} />
+          </View>
+        </View>
+
+        <Text style={styles.sectionTitle}>Operaciones</Text>
         
         <View style={styles.menuGrid}>
-          {/* NAVEGACIÓN CORREGIDA A LAS NUEVAS RUTAS */}
           <MenuButton 
             icon="water" 
             label="Estanques" 
@@ -137,22 +161,13 @@ export default function FarmDashboard() {
           
           <MenuButton 
             icon="people" 
-            label="Empleados" 
+            label="Personal" 
             color="#FFA000" 
             onPress={() => router.push(`/(owner)/farms/${id}/staff` as any)} 
           />
           
           <MenuButton icon="analytics" label="Reportes" color="#6B46C1" onPress={() => {}} />
           <MenuButton icon="settings" label="Configuración" color="#4A5568" onPress={() => {}} />
-        </View>
-
-        <View style={styles.statsCard}>
-          <Text style={styles.statsTitle}>Resumen de Finca</Text>
-          <View style={styles.statsRow}>
-            <StatItem label="Peces" value={stats.totalFish.toLocaleString()} />
-            <StatItem label="Alimento (kg)" value={stats.totalFood.toLocaleString()} />
-            <StatItem label="Alertas" value="0" />
-          </View>
         </View>
       </View>
     </ScrollView>
@@ -163,15 +178,15 @@ export default function FarmDashboard() {
 const MenuButton = ({ icon, label, color, onPress }: any) => (
   <TouchableOpacity style={styles.menuBox} onPress={onPress}>
     <View style={[styles.iconBox, { backgroundColor: color }]}>
-      <Ionicons name={icon} size={30} color="white" />
+      <Ionicons name={icon} size={28} color="white" />
     </View>
     <Text style={styles.menuLabel}>{label}</Text>
   </TouchableOpacity>
 );
 
-const StatItem = ({ label, value }: any) => (
+const StatItem = ({ label, value, color }: any) => (
   <View style={styles.statItem}>
-    <Text style={styles.statValue}>{value}</Text>
+    <Text style={[styles.statValue, { color }]}>{value}</Text>
     <Text style={styles.statLabel}>{label}</Text>
   </View>
 );
@@ -182,25 +197,32 @@ const styles = StyleSheet.create({
   header: { 
     backgroundColor: "#0066CC", 
     paddingTop: 60, paddingBottom: 30, paddingHorizontal: 20, 
-    flexDirection: "row", justifyContent: "space-between", alignItems: "center" 
+    flexDirection: "row", justifyContent: "space-between", alignItems: "center",
+    borderBottomLeftRadius: 30, borderBottomRightRadius: 30
   },
-  headerTitle: { color: "white", fontSize: 20, fontWeight: "bold" },
+  headerInfo: { alignItems: "center" },
+  headerSubtitle: { color: "rgba(255,255,255,0.8)", fontSize: 12, textTransform: "uppercase" },
+  headerTitle: { color: "white", fontSize: 22, fontWeight: "bold" },
   content: { padding: 20 },
-  sectionTitle: { fontSize: 18, fontWeight: "bold", color: "#003366", marginBottom: 20 },
+  sectionTitle: { fontSize: 18, fontWeight: "bold", color: "#003366", marginTop: 25, marginBottom: 15 },
   menuGrid: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between" },
   menuBox: { 
-    width: "47%", backgroundColor: "white", borderRadius: 16, 
-    padding: 20, marginBottom: 15, alignItems: "center", elevation: 2 
+    width: "47%", backgroundColor: "white", borderRadius: 20, 
+    padding: 20, marginBottom: 15, alignItems: "center", 
+    elevation: 3, shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4
   },
   iconBox: { 
-    width: 55, height: 55, borderRadius: 15, 
+    width: 50, height: 50, borderRadius: 15, 
     justifyContent: "center", alignItems: "center", marginBottom: 10 
   },
-  menuLabel: { fontSize: 13, fontWeight: "bold", color: "#4A5568" },
-  statsCard: { backgroundColor: "white", borderRadius: 16, padding: 20, marginTop: 10, elevation: 2 },
-  statsTitle: { fontSize: 15, fontWeight: "bold", color: "#003366", marginBottom: 15 },
+  menuLabel: { fontSize: 14, fontWeight: "bold", color: "#4A5568" },
+  statsCard: { 
+    backgroundColor: "white", borderRadius: 20, padding: 20, 
+    elevation: 4, shadowColor: "#000", shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.1, shadowRadius: 8
+  },
+  statsTitle: { fontSize: 14, fontWeight: "bold", color: "#718096", marginBottom: 15, textAlign: "center" },
   statsRow: { flexDirection: "row", justifyContent: "space-around" },
   statItem: { alignItems: "center" },
-  statValue: { fontSize: 16, fontWeight: "bold", color: "#0066CC" },
-  statLabel: { fontSize: 11, color: "#718096" }
+  statValue: { fontSize: 18, fontWeight: "bold" },
+  statLabel: { fontSize: 10, color: "#A0AEC0", marginTop: 4, textAlign: "center" }
 });

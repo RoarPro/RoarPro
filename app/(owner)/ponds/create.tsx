@@ -1,6 +1,6 @@
 import { supabase } from "@/lib/supabase";
 import { Picker } from "@react-native-picker/picker";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -15,12 +15,13 @@ import {
 
 export default function CreatePondScreen() {
   const router = useRouter();
+  // Capturamos el ID de la finca desde los parámetros de navegación
+  const { farmId: paramsFarmId } = useLocalSearchParams(); 
 
   const [pondName, setPondName] = useState("");
   const [loading, setLoading] = useState(false);
   const [fetchingBodegas, setFetchingBodegas] = useState(true);
   
-  const [farmId, setFarmId] = useState<string | null>(null);
   const [bodegas, setBodegas] = useState<any[]>([]);
   const [selectedInventoryId, setSelectedInventoryId] = useState("");
 
@@ -28,32 +29,16 @@ export default function CreatePondScreen() {
     try {
       setFetchingBodegas(true);
       
-      // 1. Obtener usuario actual
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        router.replace("/(auth)/login");
-        return;
+      // 1. Validación de parámetro: Si no hay farmId, no podemos continuar
+      if (!paramsFarmId) {
+        throw new Error("No se recibió el ID de la finca. Regresa e intenta de nuevo.");
       }
 
-      // 2. Obtener la finca del dueño (más flexible para evitar el error de farmId nulo)
-      const { data: farm, error: farmError } = await supabase
-        .from("farms")
-        .select("id")
-        .eq("owner_id", user.id)
-        .limit(1)
-        .single();
-
-      if (farmError || !farm) {
-        console.error("Error cargando finca:", farmError);
-        throw new Error("No se encontró una finca vinculada a tu cuenta.");
-      }
-      setFarmId(farm.id);
-
-      // 3. Obtener bodegas registradas para esta finca
+      // 2. Obtener bodegas de esta finca específica
       const { data: inventoryData, error: invError } = await supabase
         .from("inventory")
         .select("id, item_name, is_satellite")
-        .eq("farm_id", farm.id)
+        .eq("farm_id", paramsFarmId)
         .order("is_satellite", { ascending: true });
 
       if (invError) throw invError;
@@ -61,9 +46,9 @@ export default function CreatePondScreen() {
       if (!inventoryData || inventoryData.length === 0) {
         Alert.alert(
           "Atención", 
-          "Primero debes crear al menos una bodega en el Inventario para vincular el estanque."
+          "Primero debes crear al menos una bodega en el Inventario de esta finca para vincular el estanque."
         );
-        router.replace("/(owner)/inventory");
+        router.back();
         return;
       }
 
@@ -71,51 +56,44 @@ export default function CreatePondScreen() {
 
     } catch (error: any) {
       Alert.alert("Error de Configuración", error.message);
-      router.back();
+      if (!paramsFarmId) router.back();
     } finally {
       setFetchingBodegas(false);
     }
-  }, [router]);
+  }, [paramsFarmId, router]);
 
   useEffect(() => {
     loadInitialData();
   }, [loadInitialData]);
 
   const createPond = async () => {
-    // Validaciones
-    if (!pondName.trim()) {
-      return Alert.alert("Campo Requerido", "Ingresa el nombre del estanque.");
-    }
-    if (!selectedInventoryId) {
-      return Alert.alert("Bodega Requerida", "Asigna una bodega para este estanque.");
-    }
-    if (!farmId) {
-      return Alert.alert("Error", "No se detectó el ID de la finca. Recarga la pantalla.");
-    }
+    if (!pondName.trim()) return Alert.alert("Campo Requerido", "Ingresa el nombre.");
+    if (!selectedInventoryId) return Alert.alert("Bodega Requerida", "Asigna una bodega.");
 
     setLoading(true);
 
     try {
-      // Realizar el INSERT
+      // INSERT CORREGIDO:
+      // Hemos eliminado 'user_id' porque tu tabla 'ponds' no contiene esa columna.
+      // La seguridad se maneja a través de 'farm_id'.
       const { error } = await supabase.from("ponds").insert({
         name: pondName.trim(),
-        farm_id: farmId,
+        farm_id: paramsFarmId, 
         inventory_id: selectedInventoryId,
         active: true,
-        current_stock: 0, // Iniciamos en cero
+        current_stock: 0,
       });
 
-      if (error) {
-        console.error("Error de Supabase al insertar estanque:", error);
-        throw error;
-      }
+      if (error) throw error;
 
-      Alert.alert("¡Éxito!", "Estanque creado y vinculado correctamente.");
-      router.replace("/(owner)/ponds");
+      Alert.alert("¡Éxito!", "Estanque creado y vinculado a esta finca.");
+      
+      // Regresamos a la lista de estanques
+      router.back();
       
     } catch (error: any) {
-      console.error("Error completo:", error);
-      Alert.alert("Error al Guardar", error.message || "No se pudo conectar con el servidor.");
+      console.error("Error al Guardar:", error);
+      Alert.alert("Error", error.message || "No se pudo guardar el estanque.");
     } finally {
       setLoading(false);
     }
@@ -126,12 +104,12 @@ export default function CreatePondScreen() {
       <View style={styles.card}>
         <Text style={styles.title}>Nuevo Estanque</Text>
         <Text style={styles.subtitle}>
-          Configura un estanque asignándole una bodega específica para su alimentación.
+          Se registrará en la finca seleccionada utilizando una de sus bodegas.
         </Text>
 
         <Text style={styles.label}>Nombre del Estanque</Text>
         <TextInput
-          placeholder="Ej: Estanque P31 o La Vega"
+          placeholder="Ej: Estanque 01"
           style={styles.input}
           value={pondName}
           onChangeText={setPondName}
@@ -170,8 +148,12 @@ export default function CreatePondScreen() {
           {loading ? (
             <ActivityIndicator color="white" />
           ) : (
-            <Text style={styles.buttonText}>Finalizar Registro</Text>
+            <Text style={styles.buttonText}>Crear Estanque</Text>
           )}
+        </TouchableOpacity>
+        
+        <TouchableOpacity onPress={() => router.back()} style={{ marginTop: 20 }}>
+          <Text style={{ textAlign: 'center', color: '#718096' }}>Cancelar</Text>
         </TouchableOpacity>
       </View>
     </ScrollView>

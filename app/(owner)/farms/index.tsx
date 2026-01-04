@@ -17,7 +17,7 @@ export default function OwnerHomeScreen() {
   const [userName, setUserName] = useState("");
   const [loading, setLoading] = useState(true);
 
-  // Estados para el resumen (Datos de ejemplo que luego conectaremos a Supabase)
+  // Estados para el resumen REAL
   const [totalBiomasa, setTotalBiomasa] = useState(0); 
   const [alerts, setAlerts] = useState(0);
 
@@ -29,17 +29,20 @@ export default function OwnerHomeScreen() {
 
   const loadInitialData = async () => {
     try {
+      setLoading(true);
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
 
+      // 1. Cargar Nombre del Perfil
       const { data: profile } = await supabase
         .from("profiles")
-        .select("name")
+        .select("full_name")
         .eq("id", session.user.id)
         .single();
       
-      if (profile) setUserName(profile.name);
+      if (profile) setUserName(profile.full_name);
 
+      // 2. Cargar Fincas del Dueño
       const { data: farmsData, error: farmsError } = await supabase
         .from("farms")
         .select("*")
@@ -48,19 +51,44 @@ export default function OwnerHomeScreen() {
 
       if (farmsError) throw farmsError;
       setFarms(farmsData || []);
-      
-      // Aquí podrías calcular la biomasa total sumando los estanques de estas fincas
-      setTotalBiomasa(1240.5); // Dato de ejemplo en kg
-      setAlerts(2); // Ejemplo: 2 estanques sin alimentar o poco inventario
+
+      // 3. CALCULAR BIOMASA REAL Y ALERTAS
+      if (farmsData && farmsData.length > 0) {
+        const farmIds = farmsData.map(f => f.id);
+        
+        // Consultamos BIOMASA: Usamos fish_batches (Lotes activos)
+        // Nota: Multiplicamos cantidad actual por peso promedio
+        const { data: batchesData } = await supabase
+          .from("fish_batches")
+          .select("current_quantity, average_weight")
+          .in("farm_id", farmIds)
+          .eq("status", "active");
+
+        if (batchesData) {
+          const total = batchesData.reduce((acc, batch) => {
+            const biomassKg = ((batch.current_quantity || 0) * (batch.average_weight || 0)) / 1000;
+            return acc + biomassKg;
+          }, 0);
+          setTotalBiomasa(Number(total.toFixed(1)));
+        }
+
+        // Consultamos ALERTAS: Inventario bajo en cualquiera de las fincas (< 20kg/unidades)
+        const { count: inventoryAlerts } = await supabase
+          .from("inventory")
+          .select('*', { count: 'exact', head: true })
+          .in("farm_id", farmIds)
+          .lt("quantity", 20);
+
+        setAlerts(inventoryAlerts || 0);
+      }
 
     } catch (error) {
-      console.error("Error cargando datos:", error);
+      console.error("Error cargando datos reales:", error);
     } finally {
       setLoading(false);
     }
   };
 
-  // Componente de Tarjetas de Resumen
   const SummarySection = () => (
     <View style={styles.summaryContainer}>
       <View style={[styles.summaryCard, { backgroundColor: '#E6F4EA' }]}>
@@ -71,31 +99,30 @@ export default function OwnerHomeScreen() {
       <View style={[styles.summaryCard, { backgroundColor: '#FEF7E0' }]}>
         <Ionicons name="alert-circle" size={20} color="#F9AB00" />
         <Text style={styles.summaryValue}>{alerts}</Text>
-        <Text style={styles.summaryLabel}>Alertas hoy</Text>
+        <Text style={styles.summaryLabel}>{alerts === 1 ? 'Alerta hoy' : 'Alertas hoy'}</Text>
       </View>
     </View>
   );
 
-  // Componente de Acciones Rápidas
   const QuickActions = () => (
     <View style={styles.quickActionsContainer}>
       <Text style={styles.sectionTitle}>Acceso Rápido</Text>
       <View style={styles.actionRow}>
-        <TouchableOpacity style={styles.actionButton} onPress={() => router.push("/(owner)/ponds")}>
+        <TouchableOpacity style={styles.actionButton} onPress={() => router.push("/(owner)/ponds" as any)}>
           <View style={[styles.actionIcon, { backgroundColor: '#E8F0FE' }]}>
             <Ionicons name="restaurant-outline" size={24} color="#1A73E8" />
           </View>
           <Text style={styles.actionText}>Alimentar</Text>
         </TouchableOpacity>
         
-        <TouchableOpacity style={styles.actionButton} onPress={() => router.push("/(owner)/ponds")}>
+        <TouchableOpacity style={styles.actionButton} onPress={() => router.push("/(owner)/ponds" as any)}>
           <View style={[styles.actionIcon, { backgroundColor: '#FCE8E6' }]}>
             <Ionicons name="stats-chart-outline" size={24} color="#D93025" />
           </View>
           <Text style={styles.actionText}>Muestreo</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.actionButton} onPress={() => router.push("/(owner)/inventory")}>
+        <TouchableOpacity style={styles.actionButton} onPress={() => router.push("/(owner)/inventory" as any)}>
           <View style={[styles.actionIcon, { backgroundColor: '#E6F4EA' }]}>
             <Ionicons name="cube-outline" size={24} color="#1E8E3E" />
           </View>
@@ -117,10 +144,10 @@ export default function OwnerHomeScreen() {
     <View style={styles.container}>
       <View style={styles.header}>
         <View>
-          <Text style={styles.welcome}>¡Hola, {userName || "Propietario"}!</Text>
+          <Text style={styles.welcome}>¡Hola, {userName.split(' ')[0] || "Propietario"}!</Text>
           <Text style={styles.title}>Panel Principal</Text>
         </View>
-        <TouchableOpacity onPress={() => router.push("/(owner)/profile")}>
+        <TouchableOpacity onPress={() => router.push("/(owner)/profile" as any)}>
           <Ionicons name="person-circle-outline" size={45} color="#003366" />
         </TouchableOpacity>
       </View>
@@ -134,11 +161,11 @@ export default function OwnerHomeScreen() {
         {farms.length === 0 ? (
           <View style={styles.emptyContainer}>
             <Ionicons name="water-outline" size={100} color="#CBD5E0" />
-            <Text style={styles.emptyText}>Bienvenido al sistema</Text>
+            <Text style={styles.emptyText}>Bienvenido</Text>
             <Text style={styles.emptySubtext}>Registra tu primera finca para empezar.</Text>
             <TouchableOpacity 
               style={styles.createButton}
-              onPress={() => router.push("/(owner)/farms/create")}
+              onPress={() => router.push("/(owner)/farms/create" as any)}
             >
               <Text style={styles.createButtonText}>Registrar Mi Finca</Text>
             </TouchableOpacity>
@@ -149,7 +176,7 @@ export default function OwnerHomeScreen() {
               <TouchableOpacity 
                 key={item.id}
                 style={styles.farmCard}
-                onPress={() => router.push(`/(owner)/farms/${item.id}`)}
+                onPress={() => router.push(`/(owner)/farms/${item.id}` as any)}
               >
                 <View style={styles.farmInfo}>
                   <View style={styles.iconCircle}>
@@ -170,7 +197,7 @@ export default function OwnerHomeScreen() {
       {farms.length > 0 && (
         <TouchableOpacity 
           style={styles.fab}
-          onPress={() => router.push("/(owner)/farms/create")}
+          onPress={() => router.push("/(owner)/farms/create" as any)}
         >
           <Ionicons name="add" size={30} color="white" />
         </TouchableOpacity>
@@ -191,22 +218,16 @@ const styles = StyleSheet.create({
   welcome: { fontSize: 14, color: "#0066CC", fontWeight: "600" },
   title: { fontSize: 24, fontWeight: "bold", color: "#003366" },
   scrollContent: { paddingBottom: 100 },
-  
-  // Resumen
   summaryContainer: { flexDirection: 'row', padding: 20, justifyContent: 'space-between' },
   summaryCard: { flex: 0.48, padding: 15, borderRadius: 16, alignItems: 'center' },
   summaryValue: { fontSize: 18, fontWeight: 'bold', color: '#333', marginTop: 5 },
   summaryLabel: { fontSize: 12, color: '#666' },
-
-  // Acciones Rápidas
   quickActionsContainer: { paddingHorizontal: 20, marginBottom: 20 },
   sectionTitle: { fontSize: 18, fontWeight: 'bold', color: '#003366', marginBottom: 15 },
   actionRow: { flexDirection: 'row', justifyContent: 'space-between' },
   actionButton: { alignItems: 'center', width: '30%' },
   actionIcon: { width: 55, height: 55, borderRadius: 15, justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
   actionText: { fontSize: 12, fontWeight: '600', color: '#4A5568' },
-
-  // Tarjetas de Fincas
   farmCard: {
     backgroundColor: "white", borderRadius: 16, padding: 20, marginBottom: 12,
     flexDirection: "row", alignItems: "center", justifyContent: "space-between",
@@ -216,7 +237,6 @@ const styles = StyleSheet.create({
   iconCircle: { width: 45, height: 45, borderRadius: 22, backgroundColor: "#E6F0FA", justifyContent: "center", alignItems: "center", marginRight: 12 },
   farmName: { fontSize: 16, fontWeight: 'bold', color: "#003366" },
   farmDetails: { fontSize: 11, color: "#718096" },
-
   emptyContainer: { alignItems: "center", padding: 40 },
   emptyText: { fontSize: 20, fontWeight: "bold", color: "#4A5568", marginTop: 20 },
   emptySubtext: { fontSize: 14, color: "#718096", textAlign: "center", marginTop: 10, marginBottom: 30 },

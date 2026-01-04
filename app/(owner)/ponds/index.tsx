@@ -1,6 +1,6 @@
 import { supabase } from "@/lib/supabase";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -19,36 +19,24 @@ type Pond = {
   active: boolean;
   farm_id: string;
   inventory_id: string | null;
-  current_quantity: number; // Añadido para mostrar stock de peces
+  current_quantity: number;
 };
 
 export default function PondsScreen() {
   const router = useRouter();
+  const { farmId } = useLocalSearchParams();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [ponds, setPonds] = useState<Pond[]>([]);
 
   const loadPonds = useCallback(async () => {
     try {
-      const { data: { user }, error: userError } = await supabase.auth.getUser();
-      if (userError || !user) throw new Error("Sesión no válida");
+      setLoading(true);
+      if (!farmId) throw new Error("No se seleccionó una finca válida.");
 
-      const { data: farms, error: farmError } = await supabase
-        .from("farms")
-        .select("id")
-        .eq("owner_id", user.id);
-
-      if (farmError) throw farmError;
-      
-      if (!farms || farms.length === 0) {
-        setPonds([]);
-        setLoading(false);
-        return;
-      }
-
-      const farmId = farms[0].id;
-
-      // Traemos también current_quantity para ver los peces reales
+      // Consultamos estanques. 
+      // Nota: current_quantity vendrá de la tabla ponds si tienes el trigger, 
+      // o se puede calcular luego. Por ahora lo manejamos desde el objeto pond.
       const { data: pondsData, error: pondsError } = await supabase
         .from("ponds")
         .select("id, name, active, farm_id, inventory_id, current_quantity")
@@ -60,12 +48,12 @@ export default function PondsScreen() {
 
     } catch (error: any) {
       console.error("Error en loadPonds:", error.message);
-      Alert.alert("Error de Carga", "No se pudo sincronizar la lista de estanques.");
+      Alert.alert("Error de Carga", error.message);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [farmId]);
 
   useEffect(() => {
     loadPonds();
@@ -77,32 +65,43 @@ export default function PondsScreen() {
   };
 
   const renderItem = ({ item }: { item: Pond }) => {
+    // Verificamos si tiene peces (si current_quantity es > 0)
+    const hasFish = item.current_quantity > 0;
+
     const goToAction = (basePath: string) => {
-      if (!item.farm_id) {
-        Alert.alert("Error", "Este estanque no tiene una finca vinculada.");
-        return;
-      }
       router.push({
         pathname: `${basePath}/${item.id}` as any,
         params: { name: item.name, farm_id: item.farm_id }
       });
     };
 
+    const goToStocking = () => {
+      router.push({
+        pathname: "/(owner)/ponds/stocking",
+        params: { 
+          pondId: item.id, 
+          farmId: item.farm_id, 
+          pondName: item.name 
+        }
+      });
+    };
+
     return (
       <View style={styles.card}>
-        {/* Cabecera: Nombre y Estado */}
         <View style={styles.cardHeader}>
           <View>
             <Text style={styles.pondName}>{item.name}</Text>
             <View style={styles.statusBadge}>
-              <View style={[styles.statusDot, { backgroundColor: item.active ? "#00C853" : "#D50000" }]} />
+              <View style={[styles.statusDot, { backgroundColor: hasFish ? "#00C853" : "#718096" }]} />
               <Text style={styles.statusLabel}>
-                {item.active ? "En Producción" : "Inactivo"}
+                {hasFish ? "En Producción" : "Vacio / Inactivo"}
               </Text>
             </View>
           </View>
-          <View style={styles.fishCountBadge}>
-             <Text style={styles.fishCountText}>{item.current_quantity || 0} peces</Text>
+          <View style={[styles.fishCountBadge, { backgroundColor: hasFish ? '#EBF8FF' : '#EDF2F7' }]}>
+             <Text style={[styles.fishCountText, { color: hasFish ? '#2B6CB0' : '#718096' }]}>
+               {item.current_quantity || 0} peces
+             </Text>
           </View>
         </View>
 
@@ -110,32 +109,42 @@ export default function PondsScreen() {
            {item.inventory_id ? "📍 Bodega Vinculada" : "⚠️ Sin Bodega de Alimento"}
         </Text>
 
-        {/* Acciones del Estanque */}
-        <View style={styles.actionsGrid}>
-          <TouchableOpacity 
-            style={[styles.actionButton, styles.feedingBtn]}
-            onPress={() => goToAction("/(owner)/ponds/feeding")}
-          >
-            <Ionicons name="restaurant" size={20} color="#0066CC" />
-            <Text style={styles.actionText}>Alimentar</Text>
-          </TouchableOpacity>
+        {/* LÓGICA DINÁMICA DE ACCIONES */}
+        {hasFish ? (
+          <View style={styles.actionsGrid}>
+            <TouchableOpacity 
+              style={[styles.actionButton, styles.feedingBtn]}
+              onPress={() => goToAction("/(owner)/ponds/feeding")}
+            >
+              <Ionicons name="restaurant" size={20} color="#0066CC" />
+              <Text style={styles.actionText}>Alimentar</Text>
+            </TouchableOpacity>
 
-          <TouchableOpacity 
-            style={[styles.actionButton, styles.samplingBtn]}
-            onPress={() => goToAction("/(owner)/ponds/sampling")}
-          >
-            <Ionicons name="scale" size={20} color="#0EA5E9" />
-            <Text style={[styles.actionText, { color: '#0EA5E9' }]}>Muestreo</Text>
-          </TouchableOpacity>
+            <TouchableOpacity 
+              style={[styles.actionButton, styles.samplingBtn]}
+              onPress={() => goToAction("/(owner)/ponds/sampling")}
+            >
+              <Ionicons name="scale" size={20} color="#0EA5E9" />
+              <Text style={[styles.actionText, { color: '#0EA5E9' }]}>Muestreo</Text>
+            </TouchableOpacity>
 
+            <TouchableOpacity 
+              style={[styles.actionButton, styles.mortalityBtn]}
+              onPress={() => goToAction("/(owner)/ponds/mortality")}
+            >
+              <Ionicons name="skull" size={20} color="#E53E3E" />
+              <Text style={[styles.actionText, { color: '#E53E3E' }]}>Bajas</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
           <TouchableOpacity 
-            style={[styles.actionButton, styles.mortalityBtn]}
-            onPress={() => goToAction("/(owner)/ponds/mortality")}
+            style={styles.stockingButton}
+            onPress={goToStocking}
           >
-            <Ionicons name="skull" size={20} color="#E53E3E" />
-            <Text style={[styles.actionText, { color: '#E53E3E' }]}>Bajas</Text>
+            <Ionicons name="add-circle" size={22} color="white" />
+            <Text style={styles.stockingButtonText}>Sembrar Lote de Peces</Text>
           </TouchableOpacity>
-        </View>
+        )}
       </View>
     );
   };
@@ -143,10 +152,16 @@ export default function PondsScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
+        <TouchableOpacity onPress={() => router.back()}>
+          <Ionicons name="arrow-back" size={28} color="#003366" />
+        </TouchableOpacity>
         <Text style={styles.title}>Mis Estanques</Text>
         <TouchableOpacity
           style={styles.addButton}
-          onPress={() => router.push("/(owner)/ponds/create")}
+          onPress={() => router.push({
+            pathname: "/(owner)/ponds/create",
+            params: { farmId: farmId } 
+          })}
         >
           <Ionicons name="add" size={20} color="white" />
           <Text style={styles.addButtonText}>Nuevo</Text>
@@ -178,33 +193,40 @@ export default function PondsScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#F2F5F7", paddingHorizontal: 20 },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 20, paddingTop: 60 },
-  title: { fontSize: 26, fontWeight: "bold", color: "#003366" },
-  addButton: { backgroundColor: "#0066CC", flexDirection: 'row', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12, alignItems: 'center' },
-  addButtonText: { color: "white", fontWeight: "bold", marginLeft: 4 },
-  
-  // Card Styles
-  card: { backgroundColor: "white", padding: 18, borderRadius: 24, marginBottom: 16, elevation: 3, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4 },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 },
-  pondName: { fontSize: 20, fontWeight: "bold", color: "#2D3748" },
-  statusBadge: { flexDirection: 'row', alignItems: 'center', marginTop: 4 },
-  statusDot: { width: 8, height: 8, borderRadius: 4, marginRight: 6 },
-  statusLabel: { fontSize: 13, color: "#718096", fontWeight: '500' },
-  fishCountBadge: { backgroundColor: '#EBF8FF', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 10 },
-  fishCountText: { color: '#2B6CB0', fontWeight: 'bold', fontSize: 13 },
-  inventoryNote: { fontSize: 12, color: "#A0AEC0", marginBottom: 15 },
-  
-  // Actions Grid
-  actionsGrid: { flexDirection: 'row', justifyContent: 'space-between', gap: 8 },
-  actionButton: { flex: 1, alignItems: 'center', paddingVertical: 12, borderRadius: 16, borderWidth: 1 },
-  feedingBtn: { backgroundColor: '#F0F7FF', borderColor: '#BEE3F8' },
-  samplingBtn: { backgroundColor: '#F0F9FF', borderColor: '#BAE6FD' },
-  mortalityBtn: { backgroundColor: '#FFF5F5', borderColor: '#FED7D7' },
-  actionText: { fontSize: 11, color: "#0066CC", fontWeight: '800', marginTop: 6 },
-  
-  empty: { marginTop: 80, alignItems: "center" },
-  emptyText: { color: "#4A5568", fontSize: 18, fontWeight: 'bold', marginTop: 15 },
-  emptySub: { color: "#A0AEC0", fontSize: 14, marginTop: 5 },
+    container: { flex: 1, backgroundColor: "#F2F5F7", paddingHorizontal: 20 },
+    center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+    header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 20, paddingTop: 60 },
+    title: { fontSize: 24, fontWeight: "bold", color: "#003366" },
+    addButton: { backgroundColor: "#0066CC", flexDirection: 'row', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12, alignItems: 'center' },
+    addButtonText: { color: "white", fontWeight: "bold", marginLeft: 4 },
+    card: { backgroundColor: "white", padding: 18, borderRadius: 24, marginBottom: 16, elevation: 3, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4 },
+    cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 },
+    pondName: { fontSize: 20, fontWeight: "bold", color: "#2D3748" },
+    statusBadge: { flexDirection: 'row', alignItems: 'center', marginTop: 4 },
+    statusDot: { width: 8, height: 8, borderRadius: 4, marginRight: 6 },
+    statusLabel: { fontSize: 13, color: "#718096", fontWeight: '500' },
+    fishCountBadge: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 10 },
+    fishCountText: { fontWeight: 'bold', fontSize: 13 },
+    inventoryNote: { fontSize: 12, color: "#A0AEC0", marginBottom: 15 },
+    actionsGrid: { flexDirection: 'row', justifyContent: 'space-between', gap: 8 },
+    actionButton: { flex: 1, alignItems: 'center', paddingVertical: 12, borderRadius: 16, borderWidth: 1 },
+    feedingBtn: { backgroundColor: '#F0F7FF', borderColor: '#BEE3F8' },
+    samplingBtn: { backgroundColor: '#F0F9FF', borderColor: '#BAE6FD' },
+    mortalityBtn: { backgroundColor: '#FFF5F5', borderColor: '#FED7D7' },
+    actionText: { fontSize: 11, color: "#0066CC", fontWeight: '800', marginTop: 6 },
+    
+    // Nuevo Estilo para el botón de siembra
+    stockingButton: { 
+      backgroundColor: "#00C853", 
+      flexDirection: "row", 
+      justifyContent: "center", 
+      alignItems: "center", 
+      padding: 15, 
+      borderRadius: 15 
+    },
+    stockingButtonText: { color: "white", fontWeight: "bold", marginLeft: 8 },
+    
+    empty: { marginTop: 80, alignItems: "center" },
+    emptyText: { color: "#4A5568", fontSize: 18, fontWeight: 'bold', marginTop: 15 },
+    emptySub: { color: "#A0AEC0", fontSize: 14, marginTop: 5 },
 });
