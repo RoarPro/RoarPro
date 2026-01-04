@@ -48,7 +48,7 @@ export default function CreateFarmScreen() {
 
       if (error) throw error;
 
-      router.replace("/(owner)");
+      router.replace("/(owner)/farms");
 
     } catch (error: any) {
       console.error("Error creando finca:", error.message);

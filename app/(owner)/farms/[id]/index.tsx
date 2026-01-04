@@ -19,7 +19,6 @@ export default function FarmDashboard() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  // Estados para estadísticas
   const [stats, setStats] = useState({
     totalFish: 0,
     totalFood: 0,
@@ -27,8 +26,8 @@ export default function FarmDashboard() {
   });
 
   const fetchDashboardData = useCallback(async () => {
-    // 🛡️ BLOQUEO DE SEGURIDAD PARA RUTAS NO VÁLIDAS
-    const invalidIds = ["staff", "ponds", "inventory", "undefined", "[id]"];
+    // 🛡️ BLOQUEO DE SEGURIDAD MEJORADO
+    const invalidIds = ["staff", "ponds", "inventory", "undefined", "[id]", "create"];
     if (!id || typeof id !== 'string' || invalidIds.includes(id)) {
       setLoading(false);
       return;
@@ -37,7 +36,7 @@ export default function FarmDashboard() {
     try {
       setLoading(true);
       
-      // 1. Obtener detalles de la finca
+      // 1. Detalles de la finca
       const { data: farmData, error: farmError } = await supabase
         .from("farms")
         .select("*")
@@ -47,7 +46,7 @@ export default function FarmDashboard() {
       if (farmError) throw farmError;
       setFarm(farmData);
 
-      // 2. Calcular total de peces
+      // 2. Total de peces de esta finca específica
       const { data: pondsData } = await supabase
         .from("ponds")
         .select("current_stock")
@@ -55,7 +54,7 @@ export default function FarmDashboard() {
       
       const totalFish = pondsData?.reduce((acc, curr) => acc + (curr.current_stock || 0), 0) || 0;
 
-      // 3. Obtener inventario total
+      // 3. Inventario
       const { data: invData } = await supabase
         .from("inventory")
         .select("quantity")
@@ -63,20 +62,10 @@ export default function FarmDashboard() {
       
       const totalFood = invData?.reduce((acc, curr) => acc + (curr.quantity || 0), 0) || 0;
 
-      // 4. Ventas de hoy
-      const today = new Date().toISOString().split('T')[0];
-      const { data: salesData } = await supabase
-        .from("sales")
-        .select("total_price")
-        .eq("farm_id", id)
-        .eq("sale_date", today);
-      
-      const todaySales = salesData?.reduce((acc, curr) => acc + (curr.total_price || 0), 0) || 0;
-
       setStats({
         totalFish,
         totalFood,
-        todaySales
+        todaySales: 0 // Aquí puedes añadir la lógica de ventas si ya tienes la tabla
       });
 
     } catch (error: any) {
@@ -109,9 +98,8 @@ export default function FarmDashboard() {
       style={styles.container}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
     >
-      {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()}>
+        <TouchableOpacity onPress={() => router.push("/(owner)/farms/")}>
           <Ionicons name="arrow-back" size={28} color="white" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>{farm?.name || "Panel de Finca"}</Text>
@@ -121,9 +109,10 @@ export default function FarmDashboard() {
       </View>
 
       <View style={styles.content}>
-        <Text style={styles.sectionTitle}>Panel de Control</Text>
+        <Text style={styles.sectionTitle}>Gestión de Finca</Text>
         
         <View style={styles.menuGrid}>
+          {/* NAVEGACIÓN CORREGIDA A LAS NUEVAS RUTAS */}
           <MenuButton 
             icon="water" 
             label="Estanques" 
@@ -144,29 +133,25 @@ export default function FarmDashboard() {
             } as any)} 
           />
           
-          <MenuButton icon="cart" label="Ventas" color="#00C853" onPress={() => {/* Próxima pantalla */}} />
+          <MenuButton icon="cart" label="Ventas" color="#00C853" onPress={() => {}} />
           
           <MenuButton 
             icon="people" 
             label="Empleados" 
             color="#FFA000" 
-            onPress={() => router.push({
-                pathname: "/(owner)/farm-dashboard/staff/[id]",
-                params: { id: id as string }
-            } as any)} 
+            onPress={() => router.push(`/(owner)/farms/${id}/staff` as any)} 
           />
           
-          <MenuButton icon="analytics" label="Reportes" color="#6B46C1" onPress={() => {/* Próxima pantalla */}} />
-          <MenuButton icon="settings" label="Configuración" color="#4A5568" onPress={() => {/* Próxima pantalla */}} />
+          <MenuButton icon="analytics" label="Reportes" color="#6B46C1" onPress={() => {}} />
+          <MenuButton icon="settings" label="Configuración" color="#4A5568" onPress={() => {}} />
         </View>
 
-        {/* RESUMEN DE ESTADÍSTICAS */}
         <View style={styles.statsCard}>
-          <Text style={styles.statsTitle}>Resumen de Hoy</Text>
+          <Text style={styles.statsTitle}>Resumen de Finca</Text>
           <View style={styles.statsRow}>
-            <StatItem label="Peces Totales" value={stats.totalFish.toLocaleString()} />
+            <StatItem label="Peces" value={stats.totalFish.toLocaleString()} />
             <StatItem label="Alimento (kg)" value={stats.totalFood.toLocaleString()} />
-            <StatItem label="Ventas Hoy" value={`$${stats.todaySales.toLocaleString()}`} />
+            <StatItem label="Alertas" value="0" />
           </View>
         </View>
       </View>
@@ -174,8 +159,7 @@ export default function FarmDashboard() {
   );
 }
 
-// --- SUB-COMPONENTES ---
-
+// Sub-componentes
 const MenuButton = ({ icon, label, color, onPress }: any) => (
   <TouchableOpacity style={styles.menuBox} onPress={onPress}>
     <View style={[styles.iconBox, { backgroundColor: color }]}>
@@ -192,49 +176,31 @@ const StatItem = ({ label, value }: any) => (
   </View>
 );
 
-// --- ESTILOS ---
-
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F2F5F7" },
   center: { flex: 1, justifyContent: "center", alignItems: "center" },
   header: { 
     backgroundColor: "#0066CC", 
-    paddingTop: 60, 
-    paddingBottom: 30, 
-    paddingHorizontal: 20, 
-    flexDirection: "row", 
-    justifyContent: "space-between", 
-    alignItems: "center" 
+    paddingTop: 60, paddingBottom: 30, paddingHorizontal: 20, 
+    flexDirection: "row", justifyContent: "space-between", alignItems: "center" 
   },
-  headerTitle: { color: "white", fontSize: 22, fontWeight: "bold" },
+  headerTitle: { color: "white", fontSize: 20, fontWeight: "bold" },
   content: { padding: 20 },
-  sectionTitle: { fontSize: 20, fontWeight: "bold", color: "#003366", marginBottom: 20 },
+  sectionTitle: { fontSize: 18, fontWeight: "bold", color: "#003366", marginBottom: 20 },
   menuGrid: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between" },
   menuBox: { 
-    width: "47%", 
-    backgroundColor: "white", 
-    borderRadius: 16, 
-    padding: 20, 
-    marginBottom: 15, 
-    alignItems: "center", 
-    elevation: 2, 
-    shadowColor: "#000", 
-    shadowOpacity: 0.05, 
-    shadowRadius: 5 
+    width: "47%", backgroundColor: "white", borderRadius: 16, 
+    padding: 20, marginBottom: 15, alignItems: "center", elevation: 2 
   },
   iconBox: { 
-    width: 60, 
-    height: 60, 
-    borderRadius: 15, 
-    justifyContent: "center", 
-    alignItems: "center", 
-    marginBottom: 10 
+    width: 55, height: 55, borderRadius: 15, 
+    justifyContent: "center", alignItems: "center", marginBottom: 10 
   },
-  menuLabel: { fontSize: 14, fontWeight: "bold", color: "#4A5568" },
+  menuLabel: { fontSize: 13, fontWeight: "bold", color: "#4A5568" },
   statsCard: { backgroundColor: "white", borderRadius: 16, padding: 20, marginTop: 10, elevation: 2 },
-  statsTitle: { fontSize: 16, fontWeight: "bold", color: "#003366", marginBottom: 15 },
+  statsTitle: { fontSize: 15, fontWeight: "bold", color: "#003366", marginBottom: 15 },
   statsRow: { flexDirection: "row", justifyContent: "space-around" },
   statItem: { alignItems: "center" },
-  statValue: { fontSize: 18, fontWeight: "bold", color: "#0066CC" },
-  statLabel: { fontSize: 12, color: "#718096" }
+  statValue: { fontSize: 16, fontWeight: "bold", color: "#0066CC" },
+  statLabel: { fontSize: 11, color: "#718096" }
 });

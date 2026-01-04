@@ -3,20 +3,21 @@ import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useState } from "react";
 import {
-    ActivityIndicator,
-    Alert,
-    ScrollView,
-    Share,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View
+  ActivityIndicator,
+  Alert,
+  ScrollView,
+  Share,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View
 } from "react-native";
 
 export default function AddEmployeeScreen() {
   const router = useRouter();
-  const { farmId } = useLocalSearchParams(); 
+  // Capturamos 'id' porque así se llama la carpeta dinámica [id]
+  const { id } = useLocalSearchParams(); 
   
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
@@ -37,70 +38,72 @@ export default function AddEmployeeScreen() {
       await Share.share({ message, title: 'Credenciales de Acceso' });
       router.back();
     } catch (error) {
-      // AQUÍ USAMOS LA VARIABLE:
       console.error("Error al compartir credenciales:", error);
       router.back();
     }
   };
 
   const handleCreateEmployee = async () => {
-  if (!fullName || !email || !password) {
-    Alert.alert("Error", "Por favor completa todos los campos");
-    return;
-  }
-
-  setLoading(true);
-  try {
-    // 1. Crear el usuario en Auth
-    const { data: authData, error: authError } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: { 
-          full_name: fullName, 
-          role: 'employee' 
-        }
-      }
-    });
-
-    if (authError) throw authError;
-
-    if (authData.user) {
-      // 2. Vincular con la finca (Ya no necesitamos el delay de 2 segundos)
-      // Ahora enviamos 'permissions' para tu lógica y 'role' para la base de datos
-      const { error: linkError } = await supabase
-        .from("farm_users")
-        .insert([
-          { 
-            farm_id: farmId, 
-            user_id: authData.user.id,
-            permissions: level, // El nivel que elegiste (Nivel 1, 2 o 3)
-            role: 'employee'    // Para cumplir con la restricción de la tabla
-          }
-        ]);
-
-      if (linkError) throw linkError;
-
-      // 3. Éxito total
-      Alert.alert(
-        "¡Empleado Registrado!", 
-        `¿Deseas enviar las credenciales a ${fullName}?`,
-        [
-          { text: "No", onPress: () => router.back() },
-          { text: "Sí, Compartir", onPress: () => shareCredentials(fullName, email, password, level) }
-        ]
-      );
+    if (!fullName || !email || !password) {
+      Alert.alert("Error", "Por favor completa todos los campos");
+      return;
     }
-  } catch (error: any) {
-    // Si el correo ya existía por las pruebas fallidas, avisamos:
-    const msg = error.message.includes("already registered") 
-      ? "Este correo ya fue usado. Bórralo en el panel de Supabase > Authentication antes de intentar de nuevo."
-      : error.message;
-    Alert.alert("Error", msg);
-  } finally {
-    setLoading(false);
-  }
-};
+
+    if (!id) {
+      Alert.alert("Error", "No se detectó el ID de la finca. Regresa e intenta de nuevo.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      // 1. Crear el usuario en Auth (esto crea automáticamente el perfil via Trigger si lo tienes configurado)
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: { 
+            full_name: fullName, 
+            role: 'employee' 
+          }
+        }
+      });
+
+      if (authError) throw authError;
+
+      if (authData.user) {
+        // 2. Vincular con la finca en la tabla intermedia
+        const { error: linkError } = await supabase
+          .from("farm_users")
+          .insert([
+            { 
+              farm_id: id, // Usamos el id de la finca de la URL
+              user_id: authData.user.id,
+              permissions: level,
+              role: 'employee'
+            }
+          ]);
+
+        if (linkError) throw linkError;
+
+        // 3. Éxito y opción de compartir
+        Alert.alert(
+          "¡Empleado Registrado!", 
+          `¿Deseas enviar las credenciales a ${fullName}?`,
+          [
+            { text: "No", onPress: () => router.back() },
+            { text: "Sí, Compartir", onPress: () => shareCredentials(fullName, email, password, level) }
+          ]
+        );
+      }
+    } catch (error: any) {
+      const msg = error.message.includes("already registered") 
+        ? "Este correo ya está registrado en el sistema."
+        : error.message;
+      Alert.alert("Error", msg);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 40 }}>

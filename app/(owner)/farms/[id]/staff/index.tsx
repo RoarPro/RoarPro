@@ -115,16 +115,16 @@ export default function FarmStaffScreen() {
         )}
       </View>
 
-      {/* Botón mejorado para pasar el ID correctamente */}
+      {/* Botón actualizado para la nueva estructura */}
       <TouchableOpacity 
-        style={styles.addButton}
+       style={styles.addButton}
         onPress={() => router.push({
-            pathname: "/(owner)/farm-dashboard/staff/add-employee",
-            params: { farmId: id }
-        } as any)}
-      >
-        <Ionicons name="person-add" size={24} color="white" />
-        <Text style={styles.addButtonText}>Agregar Empleado</Text>
+       pathname: "/(owner)/farms/[id]/staff/add", // Nueva ruta
+       params: { id: id } // Pasamos el ID de la finca para que el formulario sepa a dónde agregarlo
+       } as any)}
+    >
+     <Ionicons name="person-add" size={24} color="white" />
+     <Text style={styles.addButtonText}>Agregar Empleado</Text>
       </TouchableOpacity>
     </View>
   );

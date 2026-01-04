@@ -1,29 +1,37 @@
 import { supabase } from "@/lib/supabase";
-import { Slot, useRouter } from "expo-router";
+import { Slot, useRouter, useSegments } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
 
 export default function OwnerLayout() {
   const router = useRouter();
+  const segments = useSegments(); // Nos dice en qué carpeta estamos
   const [loading, setLoading] = useState(true);
 
   const checkSession = useCallback(async () => {
     try {
       const { data: { session } } = await supabase.auth.getSession();
       
-      // Si no hay sesión, mandamos al login
       if (!session) {
         router.replace("/(auth)/login" as any);
         return;
       }
 
-      // Si hay sesión, permitimos el paso al Slot (index.tsx u otras pantallas)
+      // Lógica de Redirección Inicial:
+      // 1. Verificamos si el usuario está justo en la entrada de la carpeta (owner)
+      // Si el último segmento es "(owner)", significa que no ha entrado a ninguna sub-ruta
+      const isAtRoot = segments[segments.length - 1] === "(owner)";
+
+      if (isAtRoot) {
+     router.replace("/(owner)/farms/" as any);
+    }
+
       setLoading(false);
     } catch (err) {
       console.error("Error validando sesión en Layout:", err);
       router.replace("/(auth)/login" as any);
     }
-  }, [router]);
+  }, [router, segments]);
 
   useEffect(() => {
     checkSession();
@@ -37,6 +45,7 @@ export default function OwnerLayout() {
     );
   }
 
+  // Slot renderizará farms/index, farms/[id], etc.
   return <Slot />;
 }
 
