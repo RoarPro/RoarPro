@@ -15,10 +15,10 @@ import {
 
 export default function CreatePondScreen() {
   const router = useRouter();
-  // Capturamos el ID de la finca desde los parámetros de navegación
   const { farmId: paramsFarmId } = useLocalSearchParams(); 
 
   const [pondName, setPondName] = useState("");
+  const [area, setArea] = useState(""); // <-- Nuevo estado para el área
   const [loading, setLoading] = useState(false);
   const [fetchingBodegas, setFetchingBodegas] = useState(true);
   
@@ -29,12 +29,10 @@ export default function CreatePondScreen() {
     try {
       setFetchingBodegas(true);
       
-      // 1. Validación de parámetro: Si no hay farmId, no podemos continuar
       if (!paramsFarmId) {
         throw new Error("No se recibió el ID de la finca. Regresa e intenta de nuevo.");
       }
 
-      // 2. Obtener bodegas de esta finca específica
       const { data: inventoryData, error: invError } = await supabase
         .from("inventory")
         .select("id, item_name, is_satellite")
@@ -68,27 +66,25 @@ export default function CreatePondScreen() {
 
   const createPond = async () => {
     if (!pondName.trim()) return Alert.alert("Campo Requerido", "Ingresa el nombre.");
+    if (!area.trim() || isNaN(parseFloat(area))) return Alert.alert("Campo Requerido", "Ingresa un área válida en m².");
     if (!selectedInventoryId) return Alert.alert("Bodega Requerida", "Asigna una bodega.");
 
     setLoading(true);
 
     try {
-      // INSERT CORREGIDO:
-      // Hemos eliminado 'user_id' porque tu tabla 'ponds' no contiene esa columna.
-      // La seguridad se maneja a través de 'farm_id'.
+      // INSERT con el nuevo campo area_m2
       const { error } = await supabase.from("ponds").insert({
         name: pondName.trim(),
         farm_id: paramsFarmId, 
         inventory_id: selectedInventoryId,
+        area_m2: parseFloat(area), // <-- Guardamos el área como número
         active: true,
         current_stock: 0,
       });
 
       if (error) throw error;
 
-      Alert.alert("¡Éxito!", "Estanque creado y vinculado a esta finca.");
-      
-      // Regresamos a la lista de estanques
+      Alert.alert("¡Éxito!", "Estanque creado y configurado correctamente.");
       router.back();
       
     } catch (error: any) {
@@ -104,7 +100,7 @@ export default function CreatePondScreen() {
       <View style={styles.card}>
         <Text style={styles.title}>Nuevo Estanque</Text>
         <Text style={styles.subtitle}>
-          Se registrará en la finca seleccionada utilizando una de sus bodegas.
+          Registra la infraestructura y define su capacidad productiva.
         </Text>
 
         <Text style={styles.label}>Nombre del Estanque</Text>
@@ -113,6 +109,17 @@ export default function CreatePondScreen() {
           style={styles.input}
           value={pondName}
           onChangeText={setPondName}
+          placeholderTextColor="#A0AEC0"
+        />
+
+        {/* --- NUEVO CAMPO DE ÁREA --- */}
+        <Text style={styles.label}>Área Espejo de Agua (m²)</Text>
+        <TextInput
+          placeholder="Ej: 500"
+          style={styles.input}
+          value={area}
+          onChangeText={setArea}
+          keyboardType="numeric"
           placeholderTextColor="#A0AEC0"
         />
 
@@ -141,9 +148,12 @@ export default function CreatePondScreen() {
         </View>
 
         <TouchableOpacity 
-          style={[styles.button, (!selectedInventoryId || !pondName.trim() || loading) && styles.buttonDisabled]} 
+          style={[
+            styles.button, 
+            (!selectedInventoryId || !pondName.trim() || !area.trim() || loading) && styles.buttonDisabled
+          ]} 
           onPress={createPond}
-          disabled={!selectedInventoryId || !pondName.trim() || loading}
+          disabled={!selectedInventoryId || !pondName.trim() || !area.trim() || loading}
         >
           {loading ? (
             <ActivityIndicator color="white" />
