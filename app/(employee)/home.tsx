@@ -1,42 +1,57 @@
 import { supabase } from "@/lib/supabase";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { useEffect, useState } from "react";
-import { ScrollView, Text, TouchableOpacity, View } from "react-native";
+import { ActivityIndicator, ScrollView, Text, TouchableOpacity, View } from "react-native";
+
+// 1. Definimos los tipos para las props del botón
+interface ActionButtonProps {
+  label: string;
+  icon: React.ReactNode;
+  color?: string;
+}
 
 export default function EmployeeHomeScreen() {
-  const [name, setName] = useState("");
+  const [userData, setUserData] = useState({ name: "", role: "" });
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     loadUser();
   }, []);
 
   const loadUser = async () => {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
 
-    if (!user) return;
+      // Eliminamos 'error' de la destructuración para que ESLint no se queje
+      const { data } = await supabase
+        .from("employees")
+        .select("full_name, role")
+        .eq("id", user.id)
+        .single();
 
-    const { data } = await supabase
-      .from("profiles")
-      .select("name")
-      .eq("id", user.id)
-      .single();
-
-    if (data) setName(data.name);
+      if (data) {
+        setUserData({ name: data.full_name, role: data.role });
+      }
+    } catch (err) {
+      console.error("Error cargando usuario:", err);
+    } finally {
+      setLoading(false);
+    }
   };
+
+  if (loading) return <ActivityIndicator style={{ flex: 1 }} />;
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: "#F2F5F7" }}>
       <View style={{ padding: 20 }}>
         <Text style={{ fontSize: 32, fontWeight: "900", color: "#003366" }}>
-          Hola, {name} 👋
+          Hola, {userData.name} 👋
         </Text>
-        <Text style={{ fontSize: 18, color: "#003366", marginBottom: 20 }}>
-          Actividades asignadas
+        <Text style={{ fontSize: 16, color: "#6688AA", marginBottom: 20 }}>
+          Rol: {userData.role.toUpperCase()}
         </Text>
 
-        {/* ACCIONES PERMITIDAS */}
         <ActionButton
           label="Registrar Alimentación"
           icon={<MaterialCommunityIcons name="plus-circle-outline" size={24} color="white" />}
@@ -46,21 +61,17 @@ export default function EmployeeHomeScreen() {
           label="Registrar Parámetros"
           icon={<MaterialCommunityIcons name="thermometer" size={24} color="white" />}
         />
-
-        <ActionButton
-          label="Registrar Mortalidad"
-          icon={<MaterialCommunityIcons name="skull" size={24} color="white" />}
-        />
       </View>
     </ScrollView>
   );
 }
 
-function ActionButton({ label, icon }) {
+// 2. Aplicamos la interfaz aquí para quitar el error de 'any'
+function ActionButton({ label, icon, color = "#0066CC" }: ActionButtonProps) {
   return (
     <TouchableOpacity
       style={{
-        backgroundColor: "#0066CC",
+        backgroundColor: color,
         padding: 15,
         borderRadius: 14,
         flexDirection: "row",

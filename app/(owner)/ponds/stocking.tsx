@@ -75,8 +75,11 @@ export default function StockingScreen() {
       if (pondError) throw pondError;
 
       Alert.alert("¡Éxito!", `Se han sembrado ${qtyNum} peces en ${pondName}`);
-      router.replace("/(owner)/ponds");
-      
+        router.replace({
+         pathname: "/(owner)/ponds",
+          params: { farmId: farmId }
+      });
+
     } catch (error: any) {
       console.error("Error en siembra:", error.message);
       Alert.alert("Error", "No se pudo registrar la siembra.");

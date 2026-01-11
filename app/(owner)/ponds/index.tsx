@@ -20,6 +20,7 @@ type Pond = {
   farm_id: string;
   inventory_id: string | null;
   current_quantity: number;
+  area_m2: number; // <-- 1. Añadido al tipo
 };
 
 export default function PondsScreen() {
@@ -30,30 +31,31 @@ export default function PondsScreen() {
   const [ponds, setPonds] = useState<Pond[]>([]);
 
   const loadPonds = useCallback(async () => {
-    try {
-      setLoading(true);
-      if (!farmId) throw new Error("No se seleccionó una finca válida.");
+  // Si no hay farmId, no hacemos nada todavía, evitamos el crash
+  if (!farmId) {
+    setLoading(false);
+    return; 
+  }
 
-      // Consultamos estanques. 
-      // Nota: current_quantity vendrá de la tabla ponds si tienes el trigger, 
-      // o se puede calcular luego. Por ahora lo manejamos desde el objeto pond.
-      const { data: pondsData, error: pondsError } = await supabase
-        .from("ponds")
-        .select("id, name, active, farm_id, inventory_id, current_quantity")
-        .eq("farm_id", farmId)
-        .order("created_at", { ascending: false });
+  try {
+    setLoading(true);
+    const { data: pondsData, error: pondsError } = await supabase
+      .from("ponds")
+      .select("id, name, active, farm_id, inventory_id, current_quantity, area_m2")
+      .eq("farm_id", farmId)
+      .order("created_at", { ascending: false });
 
-      if (pondsError) throw pondsError;
-      setPonds(pondsData || []);
+    if (pondsError) throw pondsError;
+    setPonds(pondsData || []);
 
-    } catch (error: any) {
-      console.error("Error en loadPonds:", error.message);
-      Alert.alert("Error de Carga", error.message);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, [farmId]);
+  } catch (error: any) {
+    console.error("Error en loadPonds:", error.message);
+    Alert.alert("Error de Carga", error.message);
+  } finally {
+    setLoading(false);
+    setRefreshing(false);
+  }
+}, [farmId]);
 
   useEffect(() => {
     loadPonds();
@@ -65,7 +67,6 @@ export default function PondsScreen() {
   };
 
   const renderItem = ({ item }: { item: Pond }) => {
-    // Verificamos si tiene peces (si current_quantity es > 0)
     const hasFish = item.current_quantity > 0;
 
     const goToAction = (basePath: string) => {
@@ -81,8 +82,16 @@ export default function PondsScreen() {
         params: { 
           pondId: item.id, 
           farmId: item.farm_id, 
-          pondName: item.name 
+          pondName: item.name,
+          pondArea: item.area_m2 // <-- 3. Enviamos el área a la calculadora
         }
+      });
+    };
+
+    const goToEdit = () => {
+      router.push({
+        pathname: "/(owner)/ponds/create", // Reutilizaremos el form de creación o uno de edit
+        params: { farmId: farmId, pondId: item.id, isEditing: "true" } 
       });
     };
 
@@ -97,11 +106,21 @@ export default function PondsScreen() {
                 {hasFish ? "En Producción" : "Vacio / Inactivo"}
               </Text>
             </View>
+            {/* 4. Visualización del Área */}
+            <Text style={styles.areaLabel}>
+              <Ionicons name="expand-outline" size={12} /> {item.area_m2 || 0} m²
+            </Text>
           </View>
-          <View style={[styles.fishCountBadge, { backgroundColor: hasFish ? '#EBF8FF' : '#EDF2F7' }]}>
-             <Text style={[styles.fishCountText, { color: hasFish ? '#2B6CB0' : '#718096' }]}>
-               {item.current_quantity || 0} peces
-             </Text>
+          
+          <View style={styles.headerActions}>
+            <TouchableOpacity onPress={goToEdit} style={styles.editButton}>
+              <Ionicons name="pencil" size={18} color="#718096" />
+            </TouchableOpacity>
+            <View style={[styles.fishCountBadge, { backgroundColor: hasFish ? '#EBF8FF' : '#EDF2F7' }]}>
+               <Text style={[styles.fishCountText, { color: hasFish ? '#2B6CB0' : '#718096' }]}>
+                 {item.current_quantity || 0} peces
+               </Text>
+            </View>
           </View>
         </View>
 
@@ -109,7 +128,6 @@ export default function PondsScreen() {
            {item.inventory_id ? "📍 Bodega Vinculada" : "⚠️ Sin Bodega de Alimento"}
         </Text>
 
-        {/* LÓGICA DINÁMICA DE ACCIONES */}
         {hasFish ? (
           <View style={styles.actionsGrid}>
             <TouchableOpacity 
@@ -201,7 +219,10 @@ const styles = StyleSheet.create({
     addButtonText: { color: "white", fontWeight: "bold", marginLeft: 4 },
     card: { backgroundColor: "white", padding: 18, borderRadius: 24, marginBottom: 16, elevation: 3, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4 },
     cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 },
+    headerActions: { alignItems: 'flex-end' },
+    editButton: { padding: 5, marginBottom: 5 },
     pondName: { fontSize: 20, fontWeight: "bold", color: "#2D3748" },
+    areaLabel: { fontSize: 12, color: "#4A5568", marginTop: 2, fontWeight: '600' },
     statusBadge: { flexDirection: 'row', alignItems: 'center', marginTop: 4 },
     statusDot: { width: 8, height: 8, borderRadius: 4, marginRight: 6 },
     statusLabel: { fontSize: 13, color: "#718096", fontWeight: '500' },
@@ -214,18 +235,8 @@ const styles = StyleSheet.create({
     samplingBtn: { backgroundColor: '#F0F9FF', borderColor: '#BAE6FD' },
     mortalityBtn: { backgroundColor: '#FFF5F5', borderColor: '#FED7D7' },
     actionText: { fontSize: 11, color: "#0066CC", fontWeight: '800', marginTop: 6 },
-    
-    // Nuevo Estilo para el botón de siembra
-    stockingButton: { 
-      backgroundColor: "#00C853", 
-      flexDirection: "row", 
-      justifyContent: "center", 
-      alignItems: "center", 
-      padding: 15, 
-      borderRadius: 15 
-    },
+    stockingButton: { backgroundColor: "#00C853", flexDirection: "row", justifyContent: "center", alignItems: "center", padding: 15, borderRadius: 15 },
     stockingButtonText: { color: "white", fontWeight: "bold", marginLeft: 8 },
-    
     empty: { marginTop: 80, alignItems: "center" },
     emptyText: { color: "#4A5568", fontSize: 18, fontWeight: 'bold', marginTop: 15 },
     emptySub: { color: "#A0AEC0", fontSize: 14, marginTop: 5 },

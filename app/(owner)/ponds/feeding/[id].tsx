@@ -20,6 +20,7 @@ export default function FeedingForm() {
   const router = useRouter();
 
   const [inventory, setInventory] = useState<any[]>([]);
+  const [pondData, setPondData] = useState<any>(null); // Datos del estanque + batch
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -31,30 +32,39 @@ export default function FeedingForm() {
     try {
       setLoading(true);
       
-      // 1. Obtener la bodega vinculada preferida de este estanque
-      const { data: pondData } = await supabase
+      // 1. Obtener estanque con su Lote Activo (para Biomasa) e Item de alimento vinculado
+      const { data: pData, error: pError } = await supabase
         .from("ponds")
-        .select("inventory_id")
+        .select(`
+          inventory_id,
+          current_food_id,
+          fish_batches(current_quantity, average_weight)
+        `)
         .eq("id", pondId)
+        .eq("fish_batches.status", "active")
         .single();
 
-      // 2. Obtener todos los inventarios de la finca (Global y Satélites)
+      if (pError) console.log("Nota: No hay lote activo o error en batch", pError);
+      setPondData(pData);
+
+      // 2. Obtener inventarios de la finca
       const { data: invData, error: invError } = await supabase
         .from("inventory")
         .select("id, item_name, quantity, unit, is_satellite")
         .eq("farm_id", fincaId)
         .gt("quantity", 0) 
-        .order("is_satellite", { ascending: false }); // Satélites primero
+        .order("is_satellite", { ascending: false });
       
       if (invError) throw invError;
-      
       setInventory(invData || []);
 
-      // Si el estanque tiene una bodega asignada, la seleccionamos por defecto
-      if (pondData?.inventory_id) {
-        setSelectedItem(pondData.inventory_id);
+      // Seleccionar por defecto el alimento específico del estanque si existe
+      if (pData?.current_food_id) {
+        setSelectedItem(pData.current_food_id);
+      } else if (pData?.inventory_id) {
+        setSelectedItem(pData.inventory_id);
       }
-    } catch {
+    } catch  {
       Alert.alert("Error", "No se pudo sincronizar con la bodega.");
     } finally {
       setLoading(false);
@@ -67,22 +77,30 @@ export default function FeedingForm() {
     }
   }, [farm_id, id, fetchData]);
 
+  // --- LÓGICA DE CÁLCULO ---
+  const batch = pondData?.fish_batches?.[0];
+  const biomasaKg = batch ? (batch.current_quantity * batch.average_weight) / 1000 : 0;
+  
+  // Determinamos el % según el nombre del item seleccionado
+  const selectedProduct = inventory.find(i => i.id === selectedItem);
+  const isHighProtein = selectedProduct?.item_name?.includes("45");
+  const feedPercent = isHighProtein ? 0.05 : 0.03; // 5% para iniciación, 3% para el resto
+  
+  const dailyGoal = biomasaKg * feedPercent;
+  const rationSuggestion = dailyGoal / 3;
+
   const handleSave = async () => {
     const qtyToSubtract = parseFloat(amount.replace(',', '.'));
     
-    if (!selectedItem) return Alert.alert("Error", "Selecciona una bodega de suministro");
-    if (isNaN(qtyToSubtract) || qtyToSubtract <= 0) {
-      return Alert.alert("Error", "Ingresa una cantidad válida");
-    }
+    if (!selectedItem) return Alert.alert("Error", "Selecciona una bodega");
+    if (isNaN(qtyToSubtract) || qtyToSubtract <= 0) return Alert.alert("Error", "Cantidad inválida");
 
     const item = inventory.find(i => i.id === selectedItem);
-    if (!item) return Alert.alert("Error", "Insumo no encontrado");
-
-    if (qtyToSubtract > item.quantity) {
-      return Alert.alert("Stock Insuficiente", `En esta bodega solo quedan ${item.quantity} ${item.unit}.`);
+    if (!item || qtyToSubtract > item.quantity) {
+      return Alert.alert("Stock Insuficiente", "No hay suficiente alimento.");
     }
 
-    try {
+try {
       setSaving(true);
       
       // 1. Registrar el log de alimentación
@@ -92,8 +110,11 @@ export default function FeedingForm() {
           inventory_id: selectedItem,
           amount_kg: qtyToSubtract,
           notes: notes.trim(),
+          // Si tu tabla pide farm_id obligatoriamente, descomenta la línea de abajo:
+          // farm_id: farm_id 
         },
       ]);
+      
       if (logError) throw logError;
 
       // 2. Descontar del inventario seleccionado
@@ -106,8 +127,14 @@ export default function FeedingForm() {
 
       Alert.alert("¡Éxito!", "Alimentación registrada correctamente.");
       router.back();
-    } catch {
-      Alert.alert("Error", "No se pudo completar el registro.");
+
+    } catch (error: any) {
+      // ESTO TE DIRÁ EXACTAMENTE QUÉ PASA
+      console.error("Error detallado:", error);
+      Alert.alert(
+        "Error al registrar",
+        `Mensaje: ${error.message}\nDetalle: ${error.details || 'n/a'}\nSugerencia: ${error.hint || 'n/a'}`
+      );
     } finally {
       setSaving(false);
     }
@@ -116,74 +143,53 @@ export default function FeedingForm() {
   if (loading) return (
     <View style={styles.center}>
       <ActivityIndicator size="large" color="#003366" />
-      <Text style={{marginTop: 10, color: '#666'}}>Cargando bodegas...</Text>
     </View>
   );
 
   return (
-    <KeyboardAvoidingView 
-      behavior={Platform.OS === "ios" ? "padding" : "height"} 
-      style={{ flex: 1, backgroundColor: '#F2F5F7' }}
-    >
+    <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={{ flex: 1, backgroundColor: '#F2F5F7' }}>
       <ScrollView contentContainerStyle={styles.container}>
         <View style={styles.header}>
-            <Text style={styles.title}>Registrar Alimentación</Text>
-            <Text style={styles.subtitle}>{name}</Text>
+            <Text style={styles.title}>Alimentar {name}</Text>
+            {batch && (
+              <Text style={styles.subtitle}>
+                Biomasa: {biomasaKg.toFixed(1)} Kg | Meta: {dailyGoal.toFixed(1)} Kg/día
+              </Text>
+            )}
         </View>
 
         <View style={styles.form}>
-          <Text style={styles.label}>Punto de Abastecimiento</Text>
-          <View style={styles.pickerContainer}>
-            <Picker
-              selectedValue={selectedItem}
-              onValueChange={(val) => setSelectedItem(val)}
-              dropdownIconColor="#003366"
+          {/* TARJETA DE CÁLCULO SUGERIDO */}
+          <View style={styles.suggestionCard}>
+            <Text style={styles.suggestionTitle}>Sugerencia Ración (1 de 3)</Text>
+            <Text style={styles.suggestionValue}>{rationSuggestion.toFixed(2)} Kg</Text>
+            <TouchableOpacity 
+              onPress={() => setAmount(rationSuggestion.toFixed(2).toString())}
+              style={styles.applyButton}
             >
-              <Picker.Item label="-- Seleccione bodega --" value="" color="#999" />
+              <Text style={styles.applyButtonText}>Usar sugerencia</Text>
+            </TouchableOpacity>
+          </View>
+
+          <Text style={styles.label}>Alimento / Bodega</Text>
+          <View style={styles.pickerContainer}>
+            <Picker selectedValue={selectedItem} onValueChange={(val) => setSelectedItem(val)}>
+              <Picker.Item label="-- Seleccione alimento --" value="" color="#999" />
               {inventory.map((inv) => (
-                <Picker.Item 
-                  key={inv.id} 
-                  label={`${inv.is_satellite ? "📍" : "🏠"} ${inv.item_name} (Disp: ${inv.quantity} ${inv.unit})`} 
-                  value={inv.id} 
-                />
+                <Picker.Item key={inv.id} label={`${inv.item_name} (Stock: ${inv.quantity} ${inv.unit})`} value={inv.id} />
               ))}
             </Picker>
           </View>
 
-          <Text style={styles.label}>Cantidad (Kg)</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Ej: 12.5"
-            keyboardType="decimal-pad"
-            value={amount}
-            onChangeText={setAmount}
-          />
+          <Text style={styles.label}>Cantidad a suministrar (Kg)</Text>
+          <TextInput style={styles.input} keyboardType="decimal-pad" value={amount} onChangeText={setAmount} placeholder="0.00" />
 
           <Text style={styles.label}>Observaciones</Text>
-          <TextInput
-            style={[styles.input, styles.textArea]}
-            placeholder="Opcional: comportamiento de los peces, clima, etc."
-            multiline
-            numberOfLines={4}
-            value={notes}
-            onChangeText={setNotes}
-          />
+          <TextInput style={[styles.input, styles.textArea]} multiline numberOfLines={3} value={notes} onChangeText={setNotes} placeholder="..." />
 
           <View style={styles.buttonGroup}>
-            <TouchableOpacity 
-              style={[styles.button, styles.cancelButton]} 
-              onPress={() => router.back()} 
-              disabled={saving}
-            >
-              <Text style={styles.cancelButtonText}>Cancelar</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity 
-              style={[styles.button, styles.saveButton, (saving || !selectedItem) && { opacity: 0.5 }]} 
-              onPress={handleSave}
-              disabled={saving || !selectedItem}
-            >
-              {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveButtonText}>Confirmar</Text>}
+            <TouchableOpacity style={[styles.button, styles.saveButton]} onPress={handleSave} disabled={saving || !selectedItem}>
+              {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveButtonText}>Confirmar Entrega</Text>}
             </TouchableOpacity>
           </View>
         </View>
@@ -194,27 +200,22 @@ export default function FeedingForm() {
 
 const styles = StyleSheet.create({
   container: { paddingBottom: 40 },
-  header: { 
-    backgroundColor: "#003366", 
-    paddingTop: 60, 
-    paddingBottom: 30, 
-    paddingHorizontal: 25, 
-    borderBottomLeftRadius: 30, 
-    borderBottomRightRadius: 30,
-    elevation: 5
-  },
-  center: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: '#F2F5F7' },
-  title: { fontSize: 24, fontWeight: "bold", color: "#fff" },
-  subtitle: { fontSize: 16, color: "#E2E8F0", marginTop: 5 },
-  form: { padding: 25, gap: 20 },
-  label: { fontSize: 14, fontWeight: "bold", color: "#4A5568", marginBottom: -10, marginLeft: 5 },
-  pickerContainer: { backgroundColor: "white", borderRadius: 12, borderWidth: 1, borderColor: "#E2E8F0", overflow: 'hidden', elevation: 1 },
-  input: { backgroundColor: "white", borderRadius: 12, borderWidth: 1, borderColor: "#E2E8F0", padding: 15, fontSize: 16, elevation: 1 },
-  textArea: { height: 100, textAlignVertical: 'top' },
-  buttonGroup: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 15 },
-  button: { flex: 0.48, padding: 18, borderRadius: 15, alignItems: 'center', justifyContent: 'center', elevation: 2 },
-  cancelButton: { backgroundColor: "#fff" },
+  header: { backgroundColor: "#003366", paddingTop: 50, paddingBottom: 20, paddingHorizontal: 25 },
+  center: { flex: 1, justifyContent: "center", alignItems: "center" },
+  title: { fontSize: 22, fontWeight: "bold", color: "#fff" },
+  subtitle: { fontSize: 14, color: "#E2E8F0", marginTop: 5 },
+  form: { padding: 20, gap: 15 },
+  suggestionCard: { backgroundColor: "#EBF8FF", padding: 15, borderRadius: 15, borderWidth: 1, borderColor: "#BEE3F8", alignItems: 'center' },
+  suggestionTitle: { color: "#2B6CB0", fontSize: 13, fontWeight: 'bold' },
+  suggestionValue: { fontSize: 28, fontWeight: 'bold', color: "#2C5282", marginVertical: 5 },
+  applyButton: { backgroundColor: "#3182CE", paddingVertical: 5, paddingHorizontal: 15, borderRadius: 20 },
+  applyButtonText: { color: "white", fontSize: 12, fontWeight: 'bold' },
+  label: { fontSize: 14, fontWeight: "bold", color: "#4A5568" },
+  pickerContainer: { backgroundColor: "white", borderRadius: 12, borderWidth: 1, borderColor: "#E2E8F0" },
+  input: { backgroundColor: "white", borderRadius: 12, borderWidth: 1, borderColor: "#E2E8F0", padding: 12, fontSize: 16 },
+  textArea: { height: 80 },
+  buttonGroup: { marginTop: 10 },
+  button: { padding: 18, borderRadius: 15, alignItems: 'center' },
   saveButton: { backgroundColor: "#003366" },
-  cancelButtonText: { color: "#4A5568", fontWeight: "bold" },
-  saveButtonText: { color: "#fff", fontWeight: "bold" }
+  saveButtonText: { color: "#fff", fontWeight: "bold", fontSize: 16 }
 });

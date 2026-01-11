@@ -16,25 +16,24 @@ import {
 
 export default function AddEmployeeScreen() {
   const router = useRouter();
-  // Capturamos 'id' porque así se llama la carpeta dinámica [id]
+  // Capturamos el ID de la finca desde la URL
   const { id } = useLocalSearchParams(); 
   
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [level, setLevel] = useState("Nivel 1: Operario");
+  const [selectedRoleId, setSelectedRoleId] = useState("operario");
   const [loading, setLoading] = useState(false);
 
-  const levels = [
-    { id: 'Nivel 1: Operario', desc: 'Registros diarios (pH, Alimento, Mortalidad)' },
-    { id: 'Nivel 2: Administrador', desc: 'Gestión de estanques, lotes y operarios' },
-    { id: 'Nivel 3: Socio', desc: 'Acceso total (Ventas y Reportes económicos)' }
+  const roles = [
+    { id: 'operario', title: 'Nivel 1: Operario', desc: 'Registros diarios (pH, Alimento, Mortalidad)' },
+    { id: 'admin', title: 'Nivel 2: Administrador', desc: 'Gestión de estanques, lotes e inventario' },
+    { id: 'socio', title: 'Nivel 3: Socio', desc: 'Acceso total (Ventas y Reportes económicos)' }
   ];
 
-  const shareCredentials = async (name: string, mail: string, pass: string, lvl: string) => {
+  const shareCredentials = async (name: string, mail: string, pass: string, roleName: string) => {
     try {
-      const message = `*Bienvenido a AquaViva Manager*\n\nHola *${name}*, se ha creado tu cuenta de acceso.\n\n🛡️ *Nivel:* ${lvl}\n📧 *Usuario:* ${mail}\n🔑 *Clave:* ${pass}\n\nIngresa estos datos en la aplicación para comenzar.`;
-      
+      const message = `*Bienvenido a AquaViva Manager*\n\nHola *${name}*, se ha creado tu cuenta de acceso.\n\n🛡️ *Nivel:* ${roleName}\n📧 *Usuario:* ${mail}\n🔑 *Clave:* ${pass}\n\nIngresa estos datos en la aplicación para comenzar.`;
       await Share.share({ message, title: 'Credenciales de Acceso' });
       router.back();
     } catch (error) {
@@ -49,21 +48,19 @@ export default function AddEmployeeScreen() {
       return;
     }
 
-    if (!id) {
-      Alert.alert("Error", "No se detectó el ID de la finca. Regresa e intenta de nuevo.");
-      return;
-    }
-
     setLoading(true);
     try {
-      // 1. Crear el usuario en Auth (esto crea automáticamente el perfil via Trigger si lo tienes configurado)
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error("No hay sesión activa");
+
+      // 1. Crear el usuario en Auth de Supabase
       const { data: authData, error: authError } = await supabase.auth.signUp({
         email,
         password,
         options: {
           data: { 
             full_name: fullName, 
-            role: 'employee' 
+            role: selectedRoleId 
           }
         }
       });
@@ -71,27 +68,31 @@ export default function AddEmployeeScreen() {
       if (authError) throw authError;
 
       if (authData.user) {
-        // 2. Vincular con la finca en la tabla intermedia
-        const { error: linkError } = await supabase
-          .from("farm_users")
+        // 2. Insertar en la tabla 'employees' usando el 'id' de la finca
+        // Esto soluciona el error de "id is assigned a value but never used"
+        const { error: employeeError } = await supabase
+          .from("employees")
           .insert([
             { 
-              farm_id: id, // Usamos el id de la finca de la URL
-              user_id: authData.user.id,
-              permissions: level,
-              role: 'employee'
+              id: authData.user.id,
+              owner_id: session.user.id,
+              farm_id: id, // <--- Aquí usamos la variable que daba el error de ESLint
+              full_name: fullName,
+              email: email,
+              role: selectedRoleId
             }
           ]);
 
-        if (linkError) throw linkError;
+        if (employeeError) throw employeeError;
 
-        // 3. Éxito y opción de compartir
+        const roleLabel = roles.find(r => r.id === selectedRoleId)?.title || "";
+        
         Alert.alert(
           "¡Empleado Registrado!", 
           `¿Deseas enviar las credenciales a ${fullName}?`,
           [
             { text: "No", onPress: () => router.back() },
-            { text: "Sí, Compartir", onPress: () => shareCredentials(fullName, email, password, level) }
+            { text: "Sí, Compartir", onPress: () => shareCredentials(fullName, email, password, roleLabel) }
           ]
         );
       }
@@ -144,20 +145,20 @@ export default function AddEmployeeScreen() {
         />
 
         <Text style={[styles.label, { marginBottom: 12 }]}>Nivel de Acceso</Text>
-        {levels.map((item) => (
+        {roles.map((item) => (
           <TouchableOpacity 
             key={item.id}
-            style={[styles.levelCard, level === item.id && styles.levelCardSelected]}
-            onPress={() => setLevel(item.id)}
+            style={[styles.levelCard, selectedRoleId === item.id && styles.levelCardSelected]}
+            onPress={() => setSelectedRoleId(item.id)}
           >
             <View style={styles.levelRow}>
               <Ionicons 
-                name={level === item.id ? "radio-button-on" : "radio-button-off"} 
+                name={selectedRoleId === item.id ? "radio-button-on" : "radio-button-off"} 
                 size={20} 
-                color={level === item.id ? "#0066CC" : "#718096"} 
+                color={selectedRoleId === item.id ? "#0066CC" : "#718096"} 
               />
-              <Text style={[styles.levelTitle, level === item.id && styles.levelTitleSelected]}>
-                {item.id}
+              <Text style={[styles.levelTitle, selectedRoleId === item.id && styles.levelTitleSelected]}>
+                {item.title}
               </Text>
             </View>
             <Text style={styles.levelDesc}>{item.desc}</Text>
@@ -172,7 +173,7 @@ export default function AddEmployeeScreen() {
           {loading ? (
             <ActivityIndicator color="white" />
           ) : (
-            <Text style={styles.buttonText}>Registrar y Compartir</Text>
+            <Text style={styles.buttonText}>Registrar e Invitar</Text>
           )}
         </TouchableOpacity>
       </View>

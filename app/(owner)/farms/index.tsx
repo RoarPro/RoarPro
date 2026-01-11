@@ -16,48 +16,64 @@ export default function OwnerHomeScreen() {
   const [farms, setFarms] = useState<any[]>([]);
   const [userName, setUserName] = useState("");
   const [loading, setLoading] = useState(true);
+  const [userRole, setUserRole] = useState<string | null>(null);
 
-  // Estados para el resumen REAL
   const [totalBiomasa, setTotalBiomasa] = useState(0); 
   const [alerts, setAlerts] = useState(0);
 
-  useFocusEffect(
-    useCallback(() => {
-      loadInitialData();
-    }, [])
-  );
-
-  const loadInitialData = async () => {
+  const loadInitialData = useCallback(async () => {
     try {
       setLoading(true);
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
 
-      // 1. Cargar Nombre del Perfil
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("full_name")
-        .eq("id", session.user.id)
-        .single();
-      
-      if (profile) setUserName(profile.full_name);
+      const userId = session.user.id;
 
-      // 2. Cargar Fincas del Dueño
-      const { data: farmsData, error: farmsError } = await supabase
-        .from("farms")
-        .select("*")
-        .eq("owner_id", session.user.id)
-        .eq("active", true);
+      // 1. BUSCAR EN EMPLEADOS
+      const { data: empData } = await supabase
+        .from("employees")
+        .select("full_name, role, farm_id")
+        .eq("id", userId)
+        .maybeSingle();
 
+      let currentFarmId: string | null = null;
+      let detectedRole: string | null = null;
+
+      if (empData) {
+        setUserName(empData.full_name);
+        setUserRole(empData.role);
+        detectedRole = empData.role;
+        currentFarmId = empData.farm_id;
+      } else {
+        // 2. SI NO ES EMPLEADO, BUSCAR EN PROFILES (OWNER)
+        const { data: profile } = await supabase
+          .from("profiles")
+          .select("full_name")
+          .eq("id", userId)
+          .maybeSingle();
+        
+        if (profile) setUserName(profile.full_name);
+        setUserRole('owner');
+        detectedRole = 'owner';
+      }
+
+      // 3. CONSULTAR FINCAS SEGÚN EL ROL DETECTADO
+      let farmsQuery = supabase.from("farms").select("*").eq("active", true);
+
+      if (detectedRole !== 'owner' && currentFarmId) {
+        farmsQuery = farmsQuery.eq("id", currentFarmId);
+      } else {
+        farmsQuery = farmsQuery.eq("owner_id", userId);
+      }
+
+      const { data: farmsData, error: farmsError } = await farmsQuery;
       if (farmsError) throw farmsError;
       setFarms(farmsData || []);
 
-      // 3. CALCULAR BIOMASA REAL Y ALERTAS
+      // 4. CALCULAR DATOS DE RESUMEN
       if (farmsData && farmsData.length > 0) {
         const farmIds = farmsData.map(f => f.id);
         
-        // Consultamos BIOMASA: Usamos fish_batches (Lotes activos)
-        // Nota: Multiplicamos cantidad actual por peso promedio
         const { data: batchesData } = await supabase
           .from("fish_batches")
           .select("current_quantity, average_weight")
@@ -72,7 +88,6 @@ export default function OwnerHomeScreen() {
           setTotalBiomasa(Number(total.toFixed(1)));
         }
 
-        // Consultamos ALERTAS: Inventario bajo en cualquiera de las fincas (< 20kg/unidades)
         const { count: inventoryAlerts } = await supabase
           .from("inventory")
           .select('*', { count: 'exact', head: true })
@@ -82,12 +97,18 @@ export default function OwnerHomeScreen() {
         setAlerts(inventoryAlerts || 0);
       }
 
-    } catch (error) {
-      console.error("Error cargando datos reales:", error);
+    } catch (error: any) {
+      console.error("Error en Dashboard:", error.message);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadInitialData();
+    }, [loadInitialData])
+  );
 
   const SummarySection = () => (
     <View style={styles.summaryContainer}>
@@ -144,7 +165,7 @@ export default function OwnerHomeScreen() {
     <View style={styles.container}>
       <View style={styles.header}>
         <View>
-          <Text style={styles.welcome}>¡Hola, {userName.split(' ')[0] || "Propietario"}!</Text>
+          <Text style={styles.welcome}>¡Hola, {userName.split(' ')[0] || "Usuario"}!</Text>
           <Text style={styles.title}>Panel Principal</Text>
         </View>
         <TouchableOpacity onPress={() => router.push("/(owner)/profile" as any)}>
@@ -156,19 +177,27 @@ export default function OwnerHomeScreen() {
         <SummarySection />
         <QuickActions />
 
-        <Text style={[styles.sectionTitle, { marginLeft: 20, marginBottom: 10 }]}>Mis Fincas</Text>
+        <Text style={[styles.sectionTitle, { marginLeft: 20, marginBottom: 10 }]}>
+          {userRole === 'owner' ? "Mis Fincas" : "Finca Asignada"}
+        </Text>
 
         {farms.length === 0 ? (
           <View style={styles.emptyContainer}>
             <Ionicons name="water-outline" size={100} color="#CBD5E0" />
-            <Text style={styles.emptyText}>Bienvenido</Text>
-            <Text style={styles.emptySubtext}>Registra tu primera finca para empezar.</Text>
-            <TouchableOpacity 
-              style={styles.createButton}
-              onPress={() => router.push("/(owner)/farms/create" as any)}
-            >
-              <Text style={styles.createButtonText}>Registrar Mi Finca</Text>
-            </TouchableOpacity>
+            <Text style={styles.emptyText}>Sin información</Text>
+            <Text style={styles.emptySubtext}>
+              {userRole === 'owner' 
+                ? "Registra tu primera finca para empezar." 
+                : "No tienes una finca asignada. Contacta al administrador."}
+            </Text>
+            {userRole === 'owner' && (
+              <TouchableOpacity 
+                style={styles.createButton}
+                onPress={() => router.push("/(owner)/farms/create" as any)}
+              >
+                <Text style={styles.createButtonText}>Registrar Mi Finca</Text>
+              </TouchableOpacity>
+            )}
           </View>
         ) : (
           <View style={{ paddingHorizontal: 20 }}>
@@ -194,7 +223,7 @@ export default function OwnerHomeScreen() {
         )}
       </ScrollView>
 
-      {farms.length > 0 && (
+      {userRole === 'owner' && (
         <TouchableOpacity 
           style={styles.fab}
           onPress={() => router.push("/(owner)/farms/create" as any)}
