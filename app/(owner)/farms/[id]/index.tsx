@@ -4,12 +4,13 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
-  View
+  View,
 } from "react-native";
 
 export default function FarmDashboard() {
@@ -19,69 +20,68 @@ export default function FarmDashboard() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  // Estados con datos REALES
   const [stats, setStats] = useState({
     totalBiomass: 0,
     totalFood: 0,
-    activeAlerts: 0
+    activeAlerts: 0,
   });
 
   const fetchDashboardData = useCallback(async () => {
-    // Bloqueo de seguridad para rutas dinámicas
-    const invalidIds = ["staff", "ponds", "inventory", "undefined", "[id]", "create"];
-    if (!id || typeof id !== 'string' || invalidIds.includes(id)) {
-      setLoading(false);
-      return;
-    }
+    // Bloqueo de seguridad para IDs inválidos
+    if (!id || id === "[id]" || id === "undefined") return;
 
     try {
       setLoading(true);
-      
-      // 1. Detalles de la finca específica
+
+      // 1. Detalles de la finca
       const { data: farmData, error: farmError } = await supabase
         .from("farms")
         .select("*")
         .eq("id", id)
         .single();
-      
+
       if (farmError) throw farmError;
       setFarm(farmData);
 
-      // 2. BIOMASA REAL: Consultamos los lotes de peces (fish_batches) de ESTA finca
+      // 2. BIOMASA REAL (Peces activos en la finca)
       const { data: batches } = await supabase
         .from("fish_batches")
         .select("current_quantity, average_weight")
         .eq("farm_id", id)
         .eq("status", "active");
-      
-      const totalBiomass = batches?.reduce((acc, batch) => {
-        const weightKg = (batch.average_weight || 0) / 1000;
-        return acc + ((batch.current_quantity || 0) * weightKg);
-      }, 0) || 0;
 
-      // 3. INVENTARIO REAL: Solo de esta finca
+      const totalBiomass =
+        batches?.reduce((acc, batch) => {
+          return (
+            acc +
+            ((batch.current_quantity || 0) * (batch.average_weight || 0)) / 1000
+          );
+        }, 0) || 0;
+
+      // 3. INVENTARIO REAL (Alimento disponible)
       const { data: invData } = await supabase
         .from("inventory")
         .select("quantity")
         .eq("farm_id", id);
-      
-      const totalFood = invData?.reduce((acc, curr) => acc + (curr.quantity || 0), 0) || 0;
 
-      // 4. ALERTAS REALES: Consultamos tu tabla 'alerts' para esta finca
+      const totalFood =
+        invData?.reduce((acc, curr) => acc + (curr.quantity || 0), 0) || 0;
+
+      // 4. ALERTAS (Reportes de campo no resueltos)
       const { count: alertsCount } = await supabase
-        .from("alerts")
-        .select('*', { count: 'exact', head: true })
+        .from("field_reports")
+        .select("*", { count: "exact", head: true })
         .eq("farm_id", id)
-        .eq("is_resolved", false);
+        .eq("resolved", false);
 
       setStats({
         totalBiomass: Number(totalBiomass.toFixed(1)),
         totalFood: Number(totalFood.toFixed(1)),
-        activeAlerts: alertsCount || 0
+        activeAlerts: alertsCount || 0,
       });
-
     } catch (error: any) {
-      console.error("Error cargando Dashboard:", error.message);
+      console.error("Error Dashboard:", error.message);
+      Alert.alert("Error", "No se pudo actualizar la información.");
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -92,11 +92,6 @@ export default function FarmDashboard() {
     fetchDashboardData();
   }, [fetchDashboardData]);
 
-  const onRefresh = () => {
-    setRefreshing(true);
-    fetchDashboardData();
-  };
-
   if (loading && !refreshing) {
     return (
       <View style={styles.center}>
@@ -106,75 +101,115 @@ export default function FarmDashboard() {
   }
 
   return (
-    <ScrollView 
+    <ScrollView
       style={styles.container}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={() => {
+            setRefreshing(true);
+            fetchDashboardData();
+          }}
+          tintColor="#0066CC"
+        />
+      }
     >
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.push("/(owner)/farms/" as any)}>
+        <TouchableOpacity onPress={() => router.replace("/(owner)/farms/")}>
           <Ionicons name="arrow-back" size={28} color="white" />
         </TouchableOpacity>
+
         <View style={styles.headerInfo}>
           <Text style={styles.headerSubtitle}>Gestión de</Text>
           <Text style={styles.headerTitle}>{farm?.name || "Finca"}</Text>
         </View>
-        <TouchableOpacity onPress={onRefresh}>
+
+        <TouchableOpacity
+          onPress={() => {
+            setRefreshing(true);
+            fetchDashboardData();
+          }}
+        >
           <Ionicons name="refresh-circle" size={32} color="white" />
         </TouchableOpacity>
       </View>
 
       <View style={styles.content}>
-        {/* Tarjeta de Resumen Rápido */}
+        {/* Tarjeta de KPIs */}
         <View style={styles.statsCard}>
-          <Text style={styles.statsTitle}>Estado Actual</Text>
+          <Text style={styles.statsTitle}>Estado Operativo</Text>
           <View style={styles.statsRow}>
-            <StatItem label="Biomasa (kg)" value={stats.totalBiomass} color="#1E8E3E" />
-            <StatItem label="Alimento (kg)" value={stats.totalFood} color="#1A73E8" />
-            <StatItem label="Alertas" value={stats.activeAlerts} color={stats.activeAlerts > 0 ? "#D93025" : "#718096"} />
+            <StatItem
+              label="Biomasa (kg)"
+              value={stats.totalBiomass}
+              color="#1E8E3E"
+            />
+            <StatItem
+              label="Alimento (kg)"
+              value={stats.totalFood}
+              color="#1A73E8"
+            />
+            <StatItem
+              label="Alertas"
+              value={stats.activeAlerts}
+              color={stats.activeAlerts > 0 ? "#D93025" : "#718096"}
+            />
           </View>
         </View>
 
-        <Text style={styles.sectionTitle}>Operaciones</Text>
-        
+        <Text style={styles.sectionTitle}>Menú de Control</Text>
+
         <View style={styles.menuGrid}>
-          <MenuButton 
-            icon="water" 
-            label="Estanques" 
-            color="#0066CC" 
-            onPress={() => router.push({ 
-                pathname: "/(owner)/ponds", 
-                params: { farmId: id } 
-            } as any)} 
+          <MenuButton
+            icon="water"
+            label="Estanques"
+            color="#0066CC"
+            onPress={() => router.push(`/(owner)/farms/${id}/ponds` as any)}
           />
-          
-          <MenuButton 
-            icon="clipboard" 
-            label="Inventario" 
-            color="#003366" 
-            onPress={() => router.push({ 
-                pathname: "/(owner)/inventory", 
-                params: { farmId: id } 
-            } as any)} 
+
+          <MenuButton
+            icon="clipboard"
+            label="Inventario"
+            color="#003366"
+            onPress={() => router.push(`/(owner)/farms/${id}/inventory` as any)}
           />
-          
-          <MenuButton icon="cart" label="Ventas" color="#00C853" onPress={() => {}} />
-          
-          <MenuButton 
-            icon="people" 
-            label="Personal" 
-            color="#FFA000" 
-            onPress={() => router.push(`/(owner)/farms/${id}/staff` as any)} 
+
+          <MenuButton
+            icon="cart"
+            label="Ventas"
+            color="#00C853"
+            onPress={() =>
+              Alert.alert("Próximamente", "Módulo de ventas en desarrollo.")
+            }
           />
-          
-          <MenuButton icon="analytics" label="Reportes" color="#6B46C1" onPress={() => {}} />
-          <MenuButton icon="settings" label="Configuración" color="#4A5568" onPress={() => {}} />
+
+          <MenuButton
+            icon="people"
+            label="Personal"
+            color="#FFA000"
+            onPress={() => router.push(`/(owner)/farms/${id}/staff` as any)}
+          />
+
+          <MenuButton
+            icon="analytics"
+            label="Reportes"
+            color="#6B46C1"
+            onPress={() => router.push("/(owner)/reports" as any)}
+          />
+
+          <MenuButton
+            icon="settings"
+            label="Ajustes"
+            color="#4A5568"
+            onPress={() => Alert.alert("Configuración", "Ajustes de finca.")}
+          />
         </View>
       </View>
     </ScrollView>
   );
 }
 
-// Sub-componentes
+// Sub-componentes internos para limpieza de código
 const MenuButton = ({ icon, label, color, onPress }: any) => (
   <TouchableOpacity style={styles.menuBox} onPress={onPress}>
     <View style={[styles.iconBox, { backgroundColor: color }]}>
@@ -194,35 +229,89 @@ const StatItem = ({ label, value, color }: any) => (
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F2F5F7" },
   center: { flex: 1, justifyContent: "center", alignItems: "center" },
-  header: { 
-    backgroundColor: "#0066CC", 
-    paddingTop: 60, paddingBottom: 30, paddingHorizontal: 20, 
-    flexDirection: "row", justifyContent: "space-between", alignItems: "center",
-    borderBottomLeftRadius: 30, borderBottomRightRadius: 30
+  header: {
+    backgroundColor: "#0066CC",
+    paddingTop: 60,
+    paddingBottom: 35,
+    paddingHorizontal: 20,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    borderBottomLeftRadius: 35,
+    borderBottomRightRadius: 35,
+    elevation: 10,
+    shadowColor: "#000",
+    shadowOpacity: 0.2,
+    shadowRadius: 10,
   },
   headerInfo: { alignItems: "center" },
-  headerSubtitle: { color: "rgba(255,255,255,0.8)", fontSize: 12, textTransform: "uppercase" },
-  headerTitle: { color: "white", fontSize: 22, fontWeight: "bold" },
+  headerSubtitle: {
+    color: "rgba(255,255,255,0.7)",
+    fontSize: 11,
+    textTransform: "uppercase",
+    letterSpacing: 1,
+  },
+  headerTitle: { color: "white", fontSize: 24, fontWeight: "900" },
   content: { padding: 20 },
-  sectionTitle: { fontSize: 18, fontWeight: "bold", color: "#003366", marginTop: 25, marginBottom: 15 },
-  menuGrid: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between" },
-  menuBox: { 
-    width: "47%", backgroundColor: "white", borderRadius: 20, 
-    padding: 20, marginBottom: 15, alignItems: "center", 
-    elevation: 3, shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4
+  sectionTitle: {
+    fontSize: 19,
+    fontWeight: "bold",
+    color: "#003366",
+    marginTop: 25,
+    marginBottom: 15,
+    marginLeft: 5,
   },
-  iconBox: { 
-    width: 50, height: 50, borderRadius: 15, 
-    justifyContent: "center", alignItems: "center", marginBottom: 10 
+  menuGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "space-between",
   },
-  menuLabel: { fontSize: 14, fontWeight: "bold", color: "#4A5568" },
-  statsCard: { 
-    backgroundColor: "white", borderRadius: 20, padding: 20, 
-    elevation: 4, shadowColor: "#000", shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.1, shadowRadius: 8
+  menuBox: {
+    width: "47%",
+    backgroundColor: "white",
+    borderRadius: 24,
+    padding: 22,
+    marginBottom: 18,
+    alignItems: "center",
+    elevation: 4,
+    shadowColor: "#000",
+    shadowOpacity: 0.05,
+    shadowRadius: 10,
   },
-  statsTitle: { fontSize: 14, fontWeight: "bold", color: "#718096", marginBottom: 15, textAlign: "center" },
+  iconBox: {
+    width: 55,
+    height: 55,
+    borderRadius: 18,
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 12,
+  },
+  menuLabel: { fontSize: 15, fontWeight: "700", color: "#334155" },
+  statsCard: {
+    backgroundColor: "white",
+    borderRadius: 25,
+    padding: 22,
+    marginTop: -40,
+    elevation: 8,
+    shadowColor: "#000",
+    shadowOpacity: 0.1,
+    shadowRadius: 15,
+  },
+  statsTitle: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#94A3B8",
+    marginBottom: 15,
+    textAlign: "center",
+    textTransform: "uppercase",
+  },
   statsRow: { flexDirection: "row", justifyContent: "space-around" },
   statItem: { alignItems: "center" },
-  statValue: { fontSize: 18, fontWeight: "bold" },
-  statLabel: { fontSize: 10, color: "#A0AEC0", marginTop: 4, textAlign: "center" }
+  statValue: { fontSize: 20, fontWeight: "bold" },
+  statLabel: {
+    fontSize: 11,
+    color: "#64748B",
+    marginTop: 4,
+    fontWeight: "500",
+  },
 });

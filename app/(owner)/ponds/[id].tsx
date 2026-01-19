@@ -14,26 +14,27 @@ import {
 
 export default function PondDetailScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ id: string; pondId: string; pondName: string }>();
-  const id = params.id || params.pondId;
-  const pondName = params.pondName;
+  const { id, pondName } = useLocalSearchParams<{ id: string; pondName: string }>();
 
   const [pondData, setPondData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [historyLogs, setHistoryLogs] = useState<any[]>([]);
-  const [recommendation, setRecommendation] = useState<{ kg: number, bultos: number, sobrante: number, rate: number } | null>(null);
+  const [recommendation, setRecommendation] = useState<any>(null);
 
+  // Lógica de cálculo técnico
   const getTechnicalRate = (weightGr: number) => {
-    if (weightGr <= 20) return 0.08;   
-    if (weightGr <= 150) return 0.05;  
-    if (weightGr <= 500) return 0.03;  
-    return 0.015;                    
+    if (weightGr <= 20) return 0.08;
+    if (weightGr <= 150) return 0.05;
+    if (weightGr <= 500) return 0.03;
+    return 0.015;
   };
 
   const fetchPondDetails = useCallback(async () => {
     if (!id) return;
     try {
       setLoading(true);
+      
+      // 1. Obtener datos básicos del estanque
       const { data: pond, error: pondError } = await supabase
         .from("ponds")
         .select("*")
@@ -43,17 +44,20 @@ export default function PondDetailScreen() {
       if (pondError) throw pondError;
       setPondData(pond);
 
+      // 2. Obtener historial (Mortalidad, Alimentación, Pesajes)
       const [mortalidad, alimentacion, pesajes] = await Promise.all([
         supabase.from("mortality_logs").select("*").eq("pond_id", id).order("created_at", { ascending: false }).limit(5),
         supabase.from("feeding_logs").select("*").eq("pond_id", id).order("created_at", { ascending: false }).limit(5),
         supabase.from("biomass_logs").select("*").eq("pond_id", id).order("created_at", { ascending: false }).limit(5)
       ]);
 
+      // 3. Calcular recomendación si hay pesajes previos
       if (pesajes.data && pesajes.data.length > 0 && pond) {
         const ultimoPeso = pesajes.data[0].avg_weight_gr;
         const tasa = getTechnicalRate(ultimoPeso);
         const biomasaTotalKg = (pond.current_stock * ultimoPeso) / 1000;
         const totalKgSugerido = biomasaTotalKg * tasa;
+        
         setRecommendation({ 
           kg: totalKgSugerido, 
           bultos: Math.floor(totalKgSugerido / 40), 
@@ -62,6 +66,7 @@ export default function PondDetailScreen() {
         });
       }
 
+      // 4. Combinar y ordenar historial
       const combined = [
         ...(mortalidad.data || []).map(item => ({ ...item, type: 'mortality', title: 'Mortalidad', color: '#E53E3E', icon: 'trending-down', bg: '#FFF5F5' })),
         ...(alimentacion.data || []).map(item => ({ ...item, type: 'feeding', title: 'Alimentación', color: '#3182CE', icon: 'restaurant', bg: '#EBF8FF' })),
@@ -70,7 +75,7 @@ export default function PondDetailScreen() {
       
       setHistoryLogs(combined.slice(0, 10));
     } catch (error: any) { 
-      Alert.alert("Error", error.message); 
+      Alert.alert("Error de Carga", error.message); 
     } finally { 
       setLoading(false); 
     }
@@ -91,6 +96,7 @@ export default function PondDetailScreen() {
   return (
     <View style={{ flex: 1, backgroundColor: "#F7FAFC" }}>
       <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+        
         {/* HEADER */}
         <View style={styles.header}>
           <TouchableOpacity onPress={() => router.back()}>
@@ -119,24 +125,24 @@ export default function PondDetailScreen() {
           </View>
         </View>
 
-        {/* RECOMENDACIÓN */}
+        {/* RECOMENDACIÓN TÉCNICA */}
         {recommendation && (
           <View style={styles.recommendationCard}>
             <View style={styles.row}>
               <View style={{flexDirection: 'row', alignItems: 'center'}}>
                 <Ionicons name="analytics" size={20} color="#2B6CB0" />
-                <Text style={styles.recommendationTitle}> RECOMENDACIÓN TÉCNICA ({recommendation.rate.toFixed(1)}%)</Text>
+                <Text style={styles.recommendationTitle}> RECOMENDACIÓN DIARIA ({recommendation.rate.toFixed(1)}%)</Text>
               </View>
             </View>
-            <Text style={styles.recommendationText}>Ración Diaria: <Text style={{fontWeight: 'bold'}}>{recommendation.kg.toFixed(1)} Kg</Text></Text>
+            <Text style={styles.recommendationText}>Ración Sugerida: <Text style={{fontWeight: 'bold'}}>{recommendation.kg.toFixed(1)} Kg</Text></Text>
             <View style={styles.bultosBadge}>
               <Text style={styles.bultosText}>{recommendation.bultos} Bultos + {recommendation.sobrante.toFixed(1)} Kg</Text>
             </View>
           </View>
         )}
 
-        {/* BOTONES DE ACCIÓN */}
-        <Text style={styles.sectionTitle}>Gestión de Producción</Text>
+        {/* BOTONES DE ACCIÓN - RUTAS CORREGIDAS */}
+        <Text style={styles.sectionTitle}>Registrar Actividad</Text>
         <View style={styles.actionGrid}>
           <ActionBtn 
             label="Alimentar" 
@@ -144,8 +150,8 @@ export default function PondDetailScreen() {
             color="#3182CE" 
             bg="#EBF8FF" 
             onPress={() => router.push({
-              pathname: "/(owner)/ponds/feeding/[id]",
-              params: { id: id as string, name: pondData?.name, farm_id: pondData?.farm_id }
+              pathname: "/(owner)/ponds/feeding",
+              params: { id: id, name: pondData?.name, farm_id: pondData?.farm_id }
             } as any)} 
           />
           <ActionBtn 
@@ -154,8 +160,8 @@ export default function PondDetailScreen() {
             color="#E53E3E" 
             bg="#FFF5F5" 
             onPress={() => router.push({
-              pathname: "/(owner)/ponds/mortality/[id]",
-              params: { id: id as string, name: pondData?.name }
+              pathname: "/(owner)/ponds/mortality",
+              params: { id: id, name: pondData?.name }
             } as any)} 
           />
           <ActionBtn 
@@ -164,17 +170,17 @@ export default function PondDetailScreen() {
             color="#38A169" 
             bg="#F0FFF4" 
             onPress={() => router.push({
-              pathname: "/(owner)/ponds/sampling/[id]",
-              params: { id: id as string, name: pondData?.name }
+              pathname: "/(owner)/ponds/sampling",
+              params: { id: id, name: pondData?.name }
             } as any)} 
           />
         </View>
 
-        {/* HISTORIAL ACTUALIZADO CON FECHA Y HORA */}
-        <Text style={styles.sectionTitle}>Historial Reciente</Text>
+        {/* HISTORIAL RECIENTE */}
+        <Text style={styles.sectionTitle}>Historial del Estanque</Text>
         <View style={styles.historyCard}>
           {historyLogs.length === 0 ? (
-            <Text style={{ padding: 20, textAlign: 'center', color: '#A0AEC0' }}>No hay registros recientes</Text>
+            <Text style={{ padding: 20, textAlign: 'center', color: '#A0AEC0' }}>Sin movimientos registrados</Text>
           ) : (
             historyLogs.map((log, index) => (
               <View key={index} style={styles.historyItem}>
@@ -190,7 +196,6 @@ export default function PondDetailScreen() {
                   {log.notes && <Text style={styles.historyNotes}>💬 {log.notes}</Text>}
                 </View>
 
-                {/* COLUMNA DE FECHA Y HORA */}
                 <View style={{ alignItems: 'flex-end' }}>
                   <Text style={styles.historyDate}>
                     {new Date(log.created_at).toLocaleDateString(undefined, { day: '2-digit', month: 'short' })}
@@ -234,8 +239,8 @@ const styles = StyleSheet.create({
   recommendationText: { fontSize: 17, color: "#2D3748", marginTop: 8 },
   bultosBadge: { backgroundColor: "#BEE3F8", alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20, marginTop: 10 },
   bultosText: { fontSize: 12, color: '#2C5282', fontWeight: 'bold' },
-  sectionTitle: { fontSize: 18, fontWeight: "bold", marginHorizontal: 20, color: "#2D3748", marginTop: 20 },
-  actionGrid: { flexDirection: 'row', justifyContent: 'space-between', padding: 20 },
+  sectionTitle: { fontSize: 18, fontWeight: "bold", marginHorizontal: 20, color: "#2D3748", marginTop: 25 },
+  actionGrid: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 20, marginTop: 15 },
   actionButton: { backgroundColor: 'white', width: '31%', padding: 12, borderRadius: 15, alignItems: 'center', elevation: 2 },
   iconCircle: { width: 45, height: 45, borderRadius: 22, justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
   actionText: { fontSize: 11, fontWeight: 'bold', color: '#4A5568' },

@@ -1,104 +1,138 @@
 import { supabase } from "@/lib/supabase";
-import { Ionicons } from "@expo/vector-icons";
-import { useFocusEffect, useRouter } from "expo-router";
+import { useFocusEffect } from "expo-router";
 import { useCallback, useState } from "react";
-import {
-  ActivityIndicator,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View
-} from "react-native";
+import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
 
-export default function OwnerHomeScreen() {
-  const router = useRouter();
-  const [farms, setFarms] = useState<any[]>([]);
-  const [userName, setUserName] = useState("");
+// IMPORTACIÓN DE VISTAS POR ROL
+import AdminView from "@/components/views/AdminView";
+import EmployeeView from "@/components/views/EmployeeView";
+import OwnerView from "@/components/views/OwnerView";
+
+// Definimos tipos para mayor seguridad
+type UserRole = "owner" | "admin" | "operario" | null;
+
+export default function FarmsScreen() {
   const [loading, setLoading] = useState(true);
-  const [userRole, setUserRole] = useState<string | null>(null);
-
-  const [totalBiomasa, setTotalBiomasa] = useState(0); 
+  const [userRole, setUserRole] = useState<UserRole>(null);
+  const [userName, setUserName] = useState("");
+  const [farms, setFarms] = useState<any[]>([]);
+  const [totalBiomasa, setTotalBiomasa] = useState(0);
   const [alerts, setAlerts] = useState(0);
+  const [pendingTasksCount, setPendingTasksCount] = useState(0);
 
   const loadInitialData = useCallback(async () => {
     try {
       setLoading(true);
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
+      // Resetear estados para limpieza de sesión
+      setUserRole(null);
+      setFarms([]);
 
-      const userId = session.user.id;
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) return;
 
-      // 1. BUSCAR EN EMPLEADOS
-      const { data: empData } = await supabase
-        .from("employees")
-        .select("full_name, role, farm_id")
+      const userId = user.id;
+
+      // --- A. IDENTIFICACIÓN DE ROL ---
+      let detectedRole: UserRole = null;
+      let currentFarmId: string | null = null;
+
+      // 1. Buscamos en PROFILES (Unificamos búsqueda según tu nueva estructura)
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("name, role")
         .eq("id", userId)
         .maybeSingle();
 
-      let currentFarmId: string | null = null;
-      let detectedRole: string | null = null;
+      if (profile) {
+        setUserName(profile.name || "Usuario");
 
-      if (empData) {
-        setUserName(empData.full_name);
-        setUserRole(empData.role);
-        detectedRole = empData.role;
-        currentFarmId = empData.farm_id;
-      } else {
-        // 2. SI NO ES EMPLEADO, BUSCAR EN PROFILES (OWNER)
-        const { data: profile } = await supabase
-          .from("profiles")
-          .select("full_name")
-          .eq("id", userId)
-          .maybeSingle();
-        
-        if (profile) setUserName(profile.full_name);
-        setUserRole('owner');
-        detectedRole = 'owner';
+        if (profile.role === "owner") {
+          detectedRole = "owner";
+        } else {
+          // Si el perfil dice que no es owner, buscamos su asignación en employees
+          const { data: empData } = await supabase
+            .from("employees")
+            .select("role, farm_id")
+            .eq("auth_id", userId)
+            .maybeSingle();
+
+          if (empData) {
+            detectedRole = empData.role as UserRole;
+            currentFarmId = empData.farm_id;
+          }
+        }
       }
 
-      // 3. CONSULTAR FINCAS SEGÚN EL ROL DETECTADO
-      let farmsQuery = supabase.from("farms").select("*").eq("active", true);
+      if (!detectedRole) {
+        setUserRole(null);
+        setLoading(false);
+        return;
+      }
 
-      if (detectedRole !== 'owner' && currentFarmId) {
-        farmsQuery = farmsQuery.eq("id", currentFarmId);
-      } else {
+      setUserRole(detectedRole);
+
+      // --- B. CARGA DE FINCAS SEGÚN ROL ---
+      let farmsQuery = supabase
+        .from("farms")
+        .select("*, ponds(*)")
+        .eq("active", true);
+
+      if (detectedRole === "owner") {
         farmsQuery = farmsQuery.eq("owner_id", userId);
+      } else if (currentFarmId) {
+        farmsQuery = farmsQuery.eq("id", currentFarmId);
       }
 
-      const { data: farmsData, error: farmsError } = await farmsQuery;
-      if (farmsError) throw farmsError;
-      setFarms(farmsData || []);
+      const { data: farmsData } = await farmsQuery;
+      const validFarms = farmsData || [];
+      setFarms(validFarms);
 
-      // 4. CALCULAR DATOS DE RESUMEN
-      if (farmsData && farmsData.length > 0) {
-        const farmIds = farmsData.map(f => f.id);
-        
-        const { data: batchesData } = await supabase
+      // --- C. CÁLCULOS OPERATIVOS ---
+      if (validFarms.length > 0) {
+        const farmIds = validFarms.map((f) => f.id);
+
+        // 1. Biomasa (Cálculo optimizado)
+        const { data: batches } = await supabase
           .from("fish_batches")
           .select("current_quantity, average_weight")
           .in("farm_id", farmIds)
           .eq("status", "active");
 
-        if (batchesData) {
-          const total = batchesData.reduce((acc, batch) => {
-            const biomassKg = ((batch.current_quantity || 0) * (batch.average_weight || 0)) / 1000;
-            return acc + biomassKg;
-          }, 0);
-          setTotalBiomasa(Number(total.toFixed(1)));
+        const totalB =
+          batches?.reduce((acc, b) => {
+            const qty = b.current_quantity || 0;
+            const weight = b.average_weight || 0; // asumiendo gramos
+            return acc + (qty * weight) / 1000; // resultado en kg
+          }, 0) || 0;
+
+        setTotalBiomasa(Number(totalB.toFixed(1)));
+
+        // 2. Alertas de Inventario (Stock bajo)
+        const { count: inventoryCount } = await supabase
+          .from("inventory")
+          .select("*", { count: "exact", head: true })
+          .in("farm_id", farmIds)
+          .lt("quantity", 20); // Umbral de alerta
+        setAlerts(inventoryCount || 0);
+
+        // 3. Tareas Pendientes
+        let tasksQuery = supabase
+          .from("tasks")
+          .select("*", { count: "exact", head: true })
+          .in("farm_id", farmIds)
+          .eq("status", "pendiente");
+
+        if (detectedRole === "operario") {
+          tasksQuery = tasksQuery.eq("assigned_to", userId);
         }
 
-        const { count: inventoryAlerts } = await supabase
-          .from("inventory")
-          .select('*', { count: 'exact', head: true })
-          .in("farm_id", farmIds)
-          .lt("quantity", 20);
-
-        setAlerts(inventoryAlerts || 0);
+        const { count: tasksCount } = await tasksQuery;
+        setPendingTasksCount(tasksCount || 0);
       }
-
-    } catch (error: any) {
-      console.error("Error en Dashboard:", error.message);
+    } catch (error) {
+      console.error("Error en Dashboard Principal:", error);
     } finally {
       setLoading(false);
     }
@@ -107,172 +141,85 @@ export default function OwnerHomeScreen() {
   useFocusEffect(
     useCallback(() => {
       loadInitialData();
-    }, [loadInitialData])
-  );
-
-  const SummarySection = () => (
-    <View style={styles.summaryContainer}>
-      <View style={[styles.summaryCard, { backgroundColor: '#E6F4EA' }]}>
-        <Ionicons name="fish" size={20} color="#1E8E3E" />
-        <Text style={styles.summaryValue}>{totalBiomasa} kg</Text>
-        <Text style={styles.summaryLabel}>Biomasa Total</Text>
-      </View>
-      <View style={[styles.summaryCard, { backgroundColor: '#FEF7E0' }]}>
-        <Ionicons name="alert-circle" size={20} color="#F9AB00" />
-        <Text style={styles.summaryValue}>{alerts}</Text>
-        <Text style={styles.summaryLabel}>{alerts === 1 ? 'Alerta hoy' : 'Alertas hoy'}</Text>
-      </View>
-    </View>
-  );
-
-  const QuickActions = () => (
-    <View style={styles.quickActionsContainer}>
-      <Text style={styles.sectionTitle}>Acceso Rápido</Text>
-      <View style={styles.actionRow}>
-        <TouchableOpacity style={styles.actionButton} onPress={() => router.push("/(owner)/ponds" as any)}>
-          <View style={[styles.actionIcon, { backgroundColor: '#E8F0FE' }]}>
-            <Ionicons name="restaurant-outline" size={24} color="#1A73E8" />
-          </View>
-          <Text style={styles.actionText}>Alimentar</Text>
-        </TouchableOpacity>
-        
-        <TouchableOpacity style={styles.actionButton} onPress={() => router.push("/(owner)/ponds" as any)}>
-          <View style={[styles.actionIcon, { backgroundColor: '#FCE8E6' }]}>
-            <Ionicons name="stats-chart-outline" size={24} color="#D93025" />
-          </View>
-          <Text style={styles.actionText}>Muestreo</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity style={styles.actionButton} onPress={() => router.push("/(owner)/inventory" as any)}>
-          <View style={[styles.actionIcon, { backgroundColor: '#E6F4EA' }]}>
-            <Ionicons name="cube-outline" size={24} color="#1E8E3E" />
-          </View>
-          <Text style={styles.actionText}>Insumos</Text>
-        </TouchableOpacity>
-      </View>
-    </View>
+    }, [loadInitialData]),
   );
 
   if (loading) {
     return (
       <View style={styles.center}>
         <ActivityIndicator size="large" color="#0066CC" />
+        <Text style={styles.loadingText}>Sincronizando datos...</Text>
       </View>
     );
   }
 
+  // --- RENDERIZADO POR ROL ---
+
+  if (userRole === "operario") {
+    return (
+      <EmployeeView
+        userName={userName}
+        farm={farms[0]}
+        totalBiomasa={totalBiomasa}
+        alerts={alerts}
+        pendingTasksCount={pendingTasksCount}
+      />
+    );
+  }
+
+  if (userRole === "admin") {
+    return (
+      <AdminView
+        userName={userName}
+        farm={farms[0]}
+        totalBiomasa={totalBiomasa}
+        alerts={alerts}
+        pendingTasksCount={pendingTasksCount}
+      />
+    );
+  }
+
+  if (userRole === "owner") {
+    return (
+      <OwnerView
+        userName={userName}
+        farms={farms}
+        totalBiomasa={totalBiomasa}
+        alerts={alerts}
+        pendingTasksCount={pendingTasksCount}
+      />
+    );
+  }
+
   return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <View>
-          <Text style={styles.welcome}>¡Hola, {userName.split(' ')[0] || "Usuario"}!</Text>
-          <Text style={styles.title}>Panel Principal</Text>
-        </View>
-        <TouchableOpacity onPress={() => router.push("/(owner)/profile" as any)}>
-          <Ionicons name="person-circle-outline" size={45} color="#003366" />
-        </TouchableOpacity>
-      </View>
-
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        <SummarySection />
-        <QuickActions />
-
-        <Text style={[styles.sectionTitle, { marginLeft: 20, marginBottom: 10 }]}>
-          {userRole === 'owner' ? "Mis Fincas" : "Finca Asignada"}
-        </Text>
-
-        {farms.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <Ionicons name="water-outline" size={100} color="#CBD5E0" />
-            <Text style={styles.emptyText}>Sin información</Text>
-            <Text style={styles.emptySubtext}>
-              {userRole === 'owner' 
-                ? "Registra tu primera finca para empezar." 
-                : "No tienes una finca asignada. Contacta al administrador."}
-            </Text>
-            {userRole === 'owner' && (
-              <TouchableOpacity 
-                style={styles.createButton}
-                onPress={() => router.push("/(owner)/farms/create" as any)}
-              >
-                <Text style={styles.createButtonText}>Registrar Mi Finca</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        ) : (
-          <View style={{ paddingHorizontal: 20 }}>
-            {farms.map((item) => (
-              <TouchableOpacity 
-                key={item.id}
-                style={styles.farmCard}
-                onPress={() => router.push(`/(owner)/farms/${item.id}` as any)}
-              >
-                <View style={styles.farmInfo}>
-                  <View style={styles.iconCircle}>
-                    <Ionicons name="business" size={24} color="#0066CC" />
-                  </View>
-                  <View>
-                    <Text style={styles.farmName}>{item.name}</Text>
-                    <Text style={styles.farmDetails}>Toca para gestionar esta finca</Text>
-                  </View>
-                </View>
-                <Ionicons name="chevron-forward" size={20} color="#CBD5E0" />
-              </TouchableOpacity>
-            ))}
-          </View>
-        )}
-      </ScrollView>
-
-      {userRole === 'owner' && (
-        <TouchableOpacity 
-          style={styles.fab}
-          onPress={() => router.push("/(owner)/farms/create" as any)}
-        >
-          <Ionicons name="add" size={30} color="white" />
-        </TouchableOpacity>
-      )}
+    <View style={styles.center}>
+      <Text style={styles.errorText}>No se detectaron permisos válidos.</Text>
+      <Text style={styles.subErrorText}>
+        Contacta al administrador del sistema.
+      </Text>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#F2F5F7" },
-  center: { flex: 1, justifyContent: "center", alignItems: "center" },
-  header: { 
-    paddingTop: 60, paddingHorizontal: 20, paddingBottom: 20, 
-    backgroundColor: "white", flexDirection: "row", justifyContent: "space-between", alignItems: "center",
-    borderBottomLeftRadius: 20, borderBottomRightRadius: 20,
-    elevation: 4
+  center: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#F8FAFC",
+    padding: 20,
   },
-  welcome: { fontSize: 14, color: "#0066CC", fontWeight: "600" },
-  title: { fontSize: 24, fontWeight: "bold", color: "#003366" },
-  scrollContent: { paddingBottom: 100 },
-  summaryContainer: { flexDirection: 'row', padding: 20, justifyContent: 'space-between' },
-  summaryCard: { flex: 0.48, padding: 15, borderRadius: 16, alignItems: 'center' },
-  summaryValue: { fontSize: 18, fontWeight: 'bold', color: '#333', marginTop: 5 },
-  summaryLabel: { fontSize: 12, color: '#666' },
-  quickActionsContainer: { paddingHorizontal: 20, marginBottom: 20 },
-  sectionTitle: { fontSize: 18, fontWeight: 'bold', color: '#003366', marginBottom: 15 },
-  actionRow: { flexDirection: 'row', justifyContent: 'space-between' },
-  actionButton: { alignItems: 'center', width: '30%' },
-  actionIcon: { width: 55, height: 55, borderRadius: 15, justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
-  actionText: { fontSize: 12, fontWeight: '600', color: '#4A5568' },
-  farmCard: {
-    backgroundColor: "white", borderRadius: 16, padding: 20, marginBottom: 12,
-    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
-    elevation: 2
+  loadingText: { marginTop: 15, color: "#0066CC", fontWeight: "600" },
+  errorText: {
+    color: "#2D3748",
+    fontSize: 18,
+    fontWeight: "bold",
+    textAlign: "center",
   },
-  farmInfo: { flexDirection: "row", alignItems: "center" },
-  iconCircle: { width: 45, height: 45, borderRadius: 22, backgroundColor: "#E6F0FA", justifyContent: "center", alignItems: "center", marginRight: 12 },
-  farmName: { fontSize: 16, fontWeight: 'bold', color: "#003366" },
-  farmDetails: { fontSize: 11, color: "#718096" },
-  emptyContainer: { alignItems: "center", padding: 40 },
-  emptyText: { fontSize: 20, fontWeight: "bold", color: "#4A5568", marginTop: 20 },
-  emptySubtext: { fontSize: 14, color: "#718096", textAlign: "center", marginTop: 10, marginBottom: 30 },
-  createButton: { backgroundColor: "#0066CC", paddingVertical: 15, paddingHorizontal: 30, borderRadius: 12 },
-  createButtonText: { color: "white", fontWeight: "bold", fontSize: 16 },
-  fab: {
-    position: "absolute", bottom: 30, right: 30, width: 60, height: 60,
-    backgroundColor: "#00C853", borderRadius: 30, justifyContent: "center", alignItems: "center", elevation: 5
-  }
+  subErrorText: {
+    color: "#718096",
+    fontSize: 14,
+    textAlign: "center",
+    marginTop: 8,
+  },
 });
