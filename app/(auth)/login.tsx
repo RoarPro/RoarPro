@@ -181,7 +181,9 @@ export default function LoginScreen() {
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={styles.card}>
-        <Text style={[styles.title, { color: colors.primary }]}>AquaViva</Text>
+        <Text style={[styles.title, { color: colors.primary }]}>
+          AquaViva Manager
+        </Text>
         <Text style={styles.subtitle}>Gestión Acuícola Inteligente</Text>
 
         <TextInput

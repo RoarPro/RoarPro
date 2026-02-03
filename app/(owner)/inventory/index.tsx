@@ -1,3 +1,4 @@
+import { db } from "@/lib/localDb";
 import { supabase } from "@/lib/supabase";
 import { Ionicons } from "@expo/vector-icons";
 import { Picker } from "@react-native-picker/picker";
@@ -21,7 +22,7 @@ import {
 
 export default function InventoryScreen() {
   const router = useRouter();
-  const { id: farmId } = useLocalSearchParams(); // Corregido para capturar id de la ruta
+  const { id: farmId } = useLocalSearchParams();
 
   const [inventory, setInventory] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -36,37 +37,83 @@ export default function InventoryScreen() {
   const [isSatellite, setIsSatellite] = useState(false);
   const [parentId, setParentId] = useState<string | null>(null);
 
-  const fetchInventory = useCallback(async () => {
+  // ---------------------------------------------------------
+  // 1. FUNCIÓN PURA: SOLO LEER DE LOCAL
+  // ---------------------------------------------------------
+  const loadFromLocal = useCallback(() => {
     if (!farmId) return;
     try {
-      setLoading(true);
+      const localRows = db.getAllSync(
+        `SELECT * FROM local_inventory WHERE farm_id = ? ORDER BY is_satellite ASC, item_name ASC`,
+        [String(farmId)],
+      );
+
+      const formattedLocal = localRows.map((item: any) => ({
+        ...item,
+        is_satellite: Boolean(item.is_satellite),
+      }));
+
+      setInventory(formattedLocal);
+    } catch (error) {
+      console.error("Error leyendo local:", error);
+    }
+  }, [farmId]);
+
+  // ---------------------------------------------------------
+  // 2. SINCRONIZACIÓN: NUBE -> LOCAL -> REFRESCO
+  // ---------------------------------------------------------
+  const syncData = useCallback(async () => {
+    if (!farmId) return;
+    try {
       const { data, error } = await supabase
         .from("inventory")
         .select("*")
-        .eq("farm_id", farmId)
-        .order("is_satellite", { ascending: true })
-        .order("item_name", { ascending: true });
+        .eq("farm_id", farmId);
 
-      if (error) throw error;
-      setInventory(data || []);
-    } catch (error: any) {
-      console.error("Error fetch:", error.message);
-      Alert.alert("Error", "No se pudo cargar el inventario.");
+      if (!error && data) {
+        // Escribimos en SQLite (SIN borrar lo que ya hay, solo actualizando)
+        db.withTransactionSync(() => {
+          data.forEach((item) => {
+            db.runSync(
+              `INSERT OR REPLACE INTO local_inventory (id, farm_id, item_name, stock_actual, unit, is_satellite) 
+               VALUES (?, ?, ?, ?, ?, ?)`,
+              [
+                item.id,
+                item.farm_id,
+                item.item_name,
+                item.stock_actual,
+                item.unit,
+                item.is_satellite ? 1 : 0,
+              ],
+            );
+          });
+        });
+
+        // ¡IMPORTANTE! Una vez actualizado SQLite, volvemos a leer de ahí
+        loadFromLocal();
+      }
+    } catch (error) {
+      console.log("Error sincronizando (usando data local):", error);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [farmId]);
+  }, [farmId, loadFromLocal]);
 
+  // Al cargar, leemos local y luego intentamos sincronizar
   useEffect(() => {
-    fetchInventory();
-  }, [fetchInventory]);
+    loadFromLocal(); // Carga instantánea
+    syncData(); // Actualización silenciosa
+  }, [loadFromLocal, syncData]);
 
   const onRefresh = () => {
     setRefreshing(true);
-    fetchInventory();
+    syncData();
   };
 
+  // ---------------------------------------------------------
+  // 3. GUARDADO (IGUAL QUE ANTES)
+  // ---------------------------------------------------------
   const handleSaveItem = async () => {
     if (!itemName.trim() || !quantity) {
       Alert.alert("Error", "El nombre y la cantidad son obligatorios");
@@ -75,40 +122,56 @@ export default function InventoryScreen() {
 
     try {
       const stockNum = parseFloat(quantity.replace(",", "."));
+      const tempId =
+        editingId ||
+        Math.random().toString(36).substring(2, 15) +
+          Math.random().toString(36).substring(2, 15);
+
+      // A. GUARDAR EN SQLITE (Esto es lo que verás inmediatamente)
+      db.runSync(
+        `INSERT OR REPLACE INTO local_inventory (id, farm_id, item_name, stock_actual, unit, is_satellite) 
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          tempId,
+          String(farmId),
+          itemName.trim(),
+          stockNum,
+          unit.trim() || "kg",
+          isSatellite ? 1 : 0,
+        ],
+      );
+
+      Alert.alert("Éxito", "Guardado en el dispositivo");
+      closeModal();
+
+      // RECARGAMOS LA VISTA DESDE LOCAL INMEDIATAMENTE
+      loadFromLocal();
+
+      // B. ENVIAR A NUBE (Segundo plano)
       const itemData = {
+        id: tempId,
         farm_id: farmId,
         item_name: itemName.trim(),
-        stock_actual: stockNum, // Usamos stock_actual para consistencia con triggers
+        stock_actual: stockNum,
         unit: unit.trim() || "kg",
         is_satellite: isSatellite,
         parent_id: isSatellite ? parentId : null,
       };
 
-      if (editingId) {
-        const { error } = await supabase
-          .from("inventory")
-          .update(itemData)
-          .eq("id", editingId);
-        if (error) throw error;
-      } else {
-        const { error } = await supabase.from("inventory").insert([itemData]);
-        if (error) throw error;
-      }
-
-      Alert.alert("Éxito", "Bodega guardada correctamente");
-      closeModal();
-      fetchInventory();
+      const { error } = await supabase.from("inventory").upsert([itemData]);
+      if (error) console.log("Pendiente subir a nube:", error.message);
     } catch (error: any) {
-      Alert.alert("Error", error.message);
+      Alert.alert("Error Local", error.message);
     }
   };
 
+  // ... (El resto de tus funciones auxiliares y renderizado se mantienen igual)
   const openEditModal = (item: any) => {
     setEditingId(item.id);
     setItemName(item.item_name);
     setQuantity(item.stock_actual.toString());
     setUnit(item.unit);
-    setIsSatellite(item.is_satellite || false);
+    setIsSatellite(!!item.is_satellite);
     setParentId(item.parent_id || null);
     setModalVisible(true);
   };
@@ -154,7 +217,7 @@ export default function InventoryScreen() {
               {item.stock_actual} {item.unit}
             </Text>
           </Text>
-          {item.is_satellite && (
+          {Boolean(item.is_satellite) && (
             <View style={styles.tag}>
               <Text style={styles.tagText}>Bodega Satélite</Text>
             </View>
@@ -177,7 +240,7 @@ export default function InventoryScreen() {
         </TouchableOpacity>
       </View>
 
-      {loading && !refreshing ? (
+      {loading && !refreshing && inventory.length === 0 ? (
         <View style={styles.center}>
           <ActivityIndicator size="large" color="#003366" />
           <Text style={styles.loadingText}>Cargando inventario...</Text>
@@ -198,7 +261,7 @@ export default function InventoryScreen() {
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
               <Ionicons name="cube-outline" size={60} color="#CBD5E0" />
-              <Text style={styles.emptyText}>No hay bodegas registradas.</Text>
+              <Text style={styles.emptyText}>No hay bodegas locales.</Text>
             </View>
           }
         />
@@ -209,8 +272,8 @@ export default function InventoryScreen() {
           style={styles.transferBtn}
           onPress={() =>
             router.push({
-              pathname: "/(owner)/inventory/transfer",
-              params: { farmId },
+              pathname: "/inventory/transfer",
+              params: { id: farmId },
             } as any)
           }
         >
@@ -321,7 +384,7 @@ export default function InventoryScreen() {
     </View>
   );
 }
-
+// Los estilos se mantienen igual...
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F8FAFC" },
   center: { flex: 1, justifyContent: "center", alignItems: "center" },

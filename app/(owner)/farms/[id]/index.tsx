@@ -1,16 +1,16 @@
+import { db } from "@/lib/localDb"; // Importamos la DB local
 import { supabase } from "@/lib/supabase";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
-  View,
+  View
 } from "react-native";
 
 export default function FarmDashboard() {
@@ -27,23 +27,47 @@ export default function FarmDashboard() {
   });
 
   const fetchDashboardData = useCallback(async () => {
-    // Bloqueo de seguridad para IDs inválidos
     if (!id || id === "[id]" || id === "undefined") return;
 
     try {
       setLoading(true);
 
-      // 1. Detalles de la finca
+      // --- 1. INTENTAR CARGAR DESDE LOCAL PRIMERO (Para velocidad) ---
+      const localFarm = db.getFirstSync(
+        "SELECT * FROM local_farms WHERE id = ?",
+        [String(id)],
+      );
+      if (localFarm) setFarm(localFarm);
+
+      const localInv = db.getAllSync(
+        "SELECT stock_actual FROM local_inventory WHERE farm_id = ?",
+        [String(id)],
+      );
+      const localFoodSum = localInv.reduce(
+        (acc: number, curr: any) => acc + (curr.stock_actual || 0),
+        0,
+      );
+
+      setStats((prev) => ({ ...prev, totalFood: localFoodSum }));
+
+      // --- 2. CONSULTAR SUPABASE PARA ACTUALIZAR ---
+      // Detalles de la finca
       const { data: farmData, error: farmError } = await supabase
         .from("farms")
         .select("*")
         .eq("id", id)
         .single();
 
-      if (farmError) throw farmError;
-      setFarm(farmData);
+      if (!farmError && farmData) {
+        setFarm(farmData);
+        // Guardar/Actualizar en Local
+        db.runSync(
+          "INSERT OR REPLACE INTO local_farms (id, name, location) VALUES (?, ?, ?)",
+          [farmData.id, farmData.name, farmData.location || ""],
+        );
+      }
 
-      // 2. BIOMASA REAL (Peces activos en la finca)
+      // Biomasa (Peces activos)
       const { data: batches } = await supabase
         .from("fish_batches")
         .select("current_quantity, average_weight")
@@ -58,16 +82,38 @@ export default function FarmDashboard() {
           );
         }, 0) || 0;
 
-      // 3. INVENTARIO REAL (Alimento disponible)
+      // Inventario (Alimento)
       const { data: invData } = await supabase
         .from("inventory")
-        .select("quantity")
+        .select("*")
         .eq("farm_id", id);
 
-      const totalFood =
-        invData?.reduce((acc, curr) => acc + (curr.quantity || 0), 0) || 0;
+      if (invData) {
+        // Sincronizar tabla de inventario local
+        db.withTransactionSync(() => {
+          invData.forEach((item) => {
+            db.runSync(
+              `INSERT OR REPLACE INTO local_inventory 
+              (id, farm_id, item_name, stock_actual, unit, is_satellite) 
+              VALUES (?, ?, ?, ?, ?, ?)`,
+              [
+                item.id,
+                item.farm_id,
+                item.item_name,
+                item.stock_actual,
+                item.unit,
+                item.is_satellite ? 1 : 0,
+              ],
+            );
+          });
+        });
+      }
 
-      // 4. ALERTAS (Reportes de campo no resueltos)
+      const totalFood =
+        invData?.reduce((acc, curr) => acc + (curr.stock_actual || 0), 0) ||
+        localFoodSum;
+
+      // Alertas
       const { count: alertsCount } = await supabase
         .from("field_reports")
         .select("*", { count: "exact", head: true })
@@ -79,9 +125,8 @@ export default function FarmDashboard() {
         totalFood: Number(totalFood.toFixed(1)),
         activeAlerts: alertsCount || 0,
       });
-    } catch (error: any) {
-      console.error("Error Dashboard:", error.message);
-      Alert.alert("Error", "No se pudo actualizar la información.");
+    } catch {
+      console.log("Modo Offline: Usando datos locales");
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -110,7 +155,6 @@ export default function FarmDashboard() {
             setRefreshing(true);
             fetchDashboardData();
           }}
-          tintColor="#0066CC"
         />
       }
     >
@@ -118,12 +162,10 @@ export default function FarmDashboard() {
         <TouchableOpacity onPress={() => router.replace("/(owner)/farms/")}>
           <Ionicons name="arrow-back" size={28} color="white" />
         </TouchableOpacity>
-
         <View style={styles.headerInfo}>
           <Text style={styles.headerSubtitle}>Gestión de</Text>
           <Text style={styles.headerTitle}>{farm?.name || "Finca"}</Text>
         </View>
-
         <TouchableOpacity
           onPress={() => {
             setRefreshing(true);
@@ -135,9 +177,9 @@ export default function FarmDashboard() {
       </View>
 
       <View style={styles.content}>
-        {/* Tarjeta de KPIs */}
+        {/* KPIs */}
         <View style={styles.statsCard}>
-          <Text style={styles.statsTitle}>Estado Operativo</Text>
+          <Text style={styles.statsTitle}>Estado Operativo (Sincronizado)</Text>
           <View style={styles.statsRow}>
             <StatItem
               label="Biomasa (kg)"
@@ -160,27 +202,19 @@ export default function FarmDashboard() {
         <Text style={styles.sectionTitle}>Menú de Control</Text>
 
         <View style={styles.menuGrid}>
+          {/* ACCESO AL INVENTARIO - IMPORTANTE */}
+          <MenuButton
+            icon="clipboard"
+            label="Inventario"
+            color="#003366"
+            onPress={() => router.push(`/(owner)/inventory?id=${id}`)} // Ajustado para que reciba el id de la finca
+          />
+
           <MenuButton
             icon="water"
             label="Estanques"
             color="#0066CC"
             onPress={() => router.push(`/(owner)/farms/${id}/ponds` as any)}
-          />
-
-          <MenuButton
-            icon="clipboard"
-            label="Inventario"
-            color="#003366"
-            onPress={() => router.push(`/(owner)/farms/${id}/inventory` as any)}
-          />
-
-          <MenuButton
-            icon="cart"
-            label="Ventas"
-            color="#00C853"
-            onPress={() =>
-              Alert.alert("Próximamente", "Módulo de ventas en desarrollo.")
-            }
           />
 
           <MenuButton
@@ -196,20 +230,13 @@ export default function FarmDashboard() {
             color="#6B46C1"
             onPress={() => router.push("/(owner)/reports" as any)}
           />
-
-          <MenuButton
-            icon="settings"
-            label="Ajustes"
-            color="#4A5568"
-            onPress={() => Alert.alert("Configuración", "Ajustes de finca.")}
-          />
         </View>
       </View>
     </ScrollView>
   );
 }
 
-// Sub-componentes internos para limpieza de código
+// Sub-componentes (MenuButton y StatItem) se mantienen igual...
 const MenuButton = ({ icon, label, color, onPress }: any) => (
   <TouchableOpacity style={styles.menuBox} onPress={onPress}>
     <View style={[styles.iconBox, { backgroundColor: color }]}>
@@ -239,17 +266,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     borderBottomLeftRadius: 35,
     borderBottomRightRadius: 35,
-    elevation: 10,
-    shadowColor: "#000",
-    shadowOpacity: 0.2,
-    shadowRadius: 10,
   },
   headerInfo: { alignItems: "center" },
   headerSubtitle: {
     color: "rgba(255,255,255,0.7)",
     fontSize: 11,
     textTransform: "uppercase",
-    letterSpacing: 1,
   },
   headerTitle: { color: "white", fontSize: 24, fontWeight: "900" },
   content: { padding: 20 },
@@ -259,7 +281,6 @@ const styles = StyleSheet.create({
     color: "#003366",
     marginTop: 25,
     marginBottom: 15,
-    marginLeft: 5,
   },
   menuGrid: {
     flexDirection: "row",
@@ -274,9 +295,6 @@ const styles = StyleSheet.create({
     marginBottom: 18,
     alignItems: "center",
     elevation: 4,
-    shadowColor: "#000",
-    shadowOpacity: 0.05,
-    shadowRadius: 10,
   },
   iconBox: {
     width: 55,
@@ -293,12 +311,9 @@ const styles = StyleSheet.create({
     padding: 22,
     marginTop: -40,
     elevation: 8,
-    shadowColor: "#000",
-    shadowOpacity: 0.1,
-    shadowRadius: 15,
   },
   statsTitle: {
-    fontSize: 13,
+    fontSize: 11,
     fontWeight: "800",
     color: "#94A3B8",
     marginBottom: 15,
@@ -308,10 +323,5 @@ const styles = StyleSheet.create({
   statsRow: { flexDirection: "row", justifyContent: "space-around" },
   statItem: { alignItems: "center" },
   statValue: { fontSize: 20, fontWeight: "bold" },
-  statLabel: {
-    fontSize: 11,
-    color: "#64748B",
-    marginTop: 4,
-    fontWeight: "500",
-  },
+  statLabel: { fontSize: 11, color: "#64748B", marginTop: 4 },
 });

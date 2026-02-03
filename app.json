@@ -47,7 +47,8 @@
         {
           "faceIDPermission": "Permitir que AquaViva use FaceID para el acceso rápido."
         }
-      ]
+      ],
+      "expo-sqlite"
     ],
     "experiments": {
       "typedRoutes": true,
