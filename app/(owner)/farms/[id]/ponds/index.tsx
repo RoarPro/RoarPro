@@ -19,7 +19,7 @@ type Pond = {
   active: boolean;
   farm_id: string;
   inventory_id: string | null;
-  current_quantity: number;
+  current_stock: number;
   area_m2: number;
 };
 
@@ -38,7 +38,7 @@ export default function PondsScreen() {
       const { data: pondsData, error: pondsError } = await supabase
         .from("ponds")
         .select(
-          "id, name, active, farm_id, inventory_id, current_quantity, area_m2",
+          "id, name, active, farm_id, inventory_id, current_stock, area_m2",
         )
         .eq("farm_id", farmId)
         .order("created_at", { ascending: false });
@@ -67,14 +67,13 @@ export default function PondsScreen() {
   };
 
   const renderItem = ({ item }: { item: Pond }) => {
-    const hasFish = (item.current_quantity || 0) > 0;
+    const hasFish = (item.current_stock || 0) > 0;
 
-    // Navegación al Dashboard de detalle del estanque
+    // ✅ Solución al Error 2322: Usar 'as any' para calmar a TypeScript en rutas dinámicas
     const goToDetail = () => {
       router.push(`/(owner)/farms/${farmId}/ponds/${item.id}` as any);
     };
 
-    // Navegación a acciones rápidas (Solo si tiene peces)
     const goToAction = (subPath: string) => {
       router.push(
         `/(owner)/farms/${farmId}/ponds/${item.id}/${subPath}` as any,
@@ -105,7 +104,7 @@ export default function PondsScreen() {
         activeOpacity={0.8}
       >
         <View style={styles.cardHeader}>
-          <View>
+          <View style={{ flex: 1 }}>
             <Text style={styles.pondName}>{item.name}</Text>
             <View style={styles.statusBadge}>
               <View
@@ -115,18 +114,14 @@ export default function PondsScreen() {
                 ]}
               />
               <Text style={styles.statusLabel}>
-                {hasFish ? "En Producción" : "Vacío / Inactivo"}
+                {hasFish ? "En Producción" : "Disponible para Siembra"}
               </Text>
             </View>
-            <Text style={styles.areaLabel}>
-              <Ionicons name="expand-outline" size={12} /> {item.area_m2 || 0}{" "}
-              m²
-            </Text>
           </View>
 
           <View style={styles.headerActions}>
             <TouchableOpacity onPress={goToEdit} style={styles.editButton}>
-              <Ionicons name="pencil" size={18} color="#718096" />
+              <Ionicons name="settings-outline" size={20} color="#718096" />
             </TouchableOpacity>
             <View
               style={[
@@ -140,17 +135,33 @@ export default function PondsScreen() {
                   { color: hasFish ? "#2B6CB0" : "#718096" },
                 ]}
               >
-                {item.current_quantity || 0} peces
+                {item.current_stock || 0} peces
               </Text>
             </View>
           </View>
         </View>
 
-        <Text style={styles.inventoryNote}>
-          {item.inventory_id
-            ? "📍 Bodega Vinculada"
-            : "⚠️ Sin Bodega de Alimento"}
-        </Text>
+        <View style={styles.infoRow}>
+          <View style={styles.infoBox}>
+            <Ionicons name="expand-outline" size={14} color="#64748B" />
+            <Text style={styles.infoText}>{item.area_m2} m²</Text>
+          </View>
+          <View style={styles.infoBox}>
+            <Ionicons
+              name={item.inventory_id ? "cube-outline" : "alert-circle-outline"}
+              size={14}
+              color={item.inventory_id ? "#38A169" : "#E53E3E"}
+            />
+            <Text
+              style={[
+                styles.infoText,
+                { color: item.inventory_id ? "#38A169" : "#E53E3E" },
+              ]}
+            >
+              {item.inventory_id ? "Bodega vinculada" : "Sin bodega"}
+            </Text>
+          </View>
+        </View>
 
         {hasFish ? (
           <View style={styles.actionsGrid}>
@@ -158,7 +169,7 @@ export default function PondsScreen() {
               style={[styles.actionButton, styles.feedingBtn]}
               onPress={() => goToAction("feeding")}
             >
-              <Ionicons name="restaurant" size={20} color="#0066CC" />
+              <Ionicons name="restaurant-outline" size={18} color="#0066CC" />
               <Text style={styles.actionText}>Alimentar</Text>
             </TouchableOpacity>
 
@@ -166,9 +177,9 @@ export default function PondsScreen() {
               style={[styles.actionButton, styles.samplingBtn]}
               onPress={() => goToAction("sampling")}
             >
-              <Ionicons name="scale" size={20} color="#0EA5E9" />
+              <Ionicons name="scale-outline" size={18} color="#0EA5E9" />
               <Text style={[styles.actionText, { color: "#0EA5E9" }]}>
-                Muestreo
+                Pesaje
               </Text>
             </TouchableOpacity>
 
@@ -176,7 +187,11 @@ export default function PondsScreen() {
               style={[styles.actionButton, styles.mortalityBtn]}
               onPress={() => goToAction("mortality")}
             >
-              <Ionicons name="skull" size={20} color="#E53E3E" />
+              <Ionicons
+                name="trending-down-outline"
+                size={18}
+                color="#E53E3E"
+              />
               <Text style={[styles.actionText, { color: "#E53E3E" }]}>
                 Bajas
               </Text>
@@ -188,7 +203,9 @@ export default function PondsScreen() {
             onPress={goToStocking}
           >
             <Ionicons name="add-circle" size={22} color="white" />
-            <Text style={styles.stockingButtonText}>Sembrar Lote de Peces</Text>
+            <Text style={styles.stockingButtonText}>
+              Registrar Nueva Siembra
+            </Text>
           </TouchableOpacity>
         )}
       </TouchableOpacity>
@@ -229,8 +246,11 @@ export default function PondsScreen() {
           ListEmptyComponent={
             <View style={styles.empty}>
               <Ionicons name="water-outline" size={80} color="#CBD5E0" />
-              <Text style={styles.emptyText}>No hay estanques registrados</Text>
-              <Text style={styles.emptySub}>Presiona Nuevo para comenzar</Text>
+              <Text style={styles.emptyText}>No hay estanques</Text>
+              {/* ✅ Solución Error ESLint: Quitar comillas del texto */}
+              <Text style={styles.emptySub}>
+                Presiona el botón Nuevo para crear el primero
+              </Text>
             </View>
           }
         />
@@ -240,7 +260,7 @@ export default function PondsScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#F2F5F7", paddingHorizontal: 20 },
+  container: { flex: 1, backgroundColor: "#F8FAFC", paddingHorizontal: 20 },
   center: { flex: 1, justifyContent: "center", alignItems: "center" },
   header: {
     flexDirection: "row",
@@ -261,49 +281,36 @@ const styles = StyleSheet.create({
   addButtonText: { color: "white", fontWeight: "bold", marginLeft: 4 },
   card: {
     backgroundColor: "white",
-    padding: 18,
+    padding: 20,
     borderRadius: 24,
     marginBottom: 16,
     elevation: 3,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
   },
   cardHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "flex-start",
-    marginBottom: 10,
+    marginBottom: 12,
   },
   headerActions: { alignItems: "flex-end" },
   editButton: { padding: 5, marginBottom: 5 },
-  pondName: { fontSize: 20, fontWeight: "bold", color: "#2D3748" },
-  areaLabel: {
-    fontSize: 12,
-    color: "#4A5568",
-    marginTop: 2,
-    fontWeight: "600",
-  },
+  pondName: { fontSize: 20, fontWeight: "bold", color: "#1E293B" },
   statusBadge: { flexDirection: "row", alignItems: "center", marginTop: 4 },
   statusDot: { width: 8, height: 8, borderRadius: 4, marginRight: 6 },
-  statusLabel: { fontSize: 13, color: "#718096", fontWeight: "500" },
+  statusLabel: { fontSize: 13, color: "#64748B", fontWeight: "500" },
+  infoRow: { flexDirection: "row", gap: 15, marginBottom: 20 },
+  infoBox: { flexDirection: "row", alignItems: "center", gap: 5 },
+  infoText: { fontSize: 12, fontWeight: "600", color: "#64748B" },
   fishCountBadge: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
   },
-  fishCountText: { fontWeight: "bold", fontSize: 13 },
-  inventoryNote: {
-    fontSize: 11,
-    color: "#A0AEC0",
-    marginBottom: 15,
-    fontWeight: "500",
-  },
+  fishCountText: { fontWeight: "bold", fontSize: 12 },
   actionsGrid: {
     flexDirection: "row",
     justifyContent: "space-between",
-    gap: 8,
+    gap: 10,
   },
   actionButton: {
     flex: 1,
@@ -319,24 +326,24 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: "#0066CC",
     fontWeight: "800",
-    marginTop: 6,
+    marginTop: 5,
     textTransform: "uppercase",
   },
   stockingButton: {
-    backgroundColor: "#00C853",
+    backgroundColor: "#10B981",
     flexDirection: "row",
     justifyContent: "center",
     alignItems: "center",
     padding: 15,
-    borderRadius: 15,
+    borderRadius: 16,
   },
   stockingButtonText: { color: "white", fontWeight: "bold", marginLeft: 8 },
   empty: { marginTop: 80, alignItems: "center" },
   emptyText: {
-    color: "#4A5568",
+    color: "#475569",
     fontSize: 18,
     fontWeight: "bold",
     marginTop: 15,
   },
-  emptySub: { color: "#A0AEC0", fontSize: 14, marginTop: 5 },
+  emptySub: { color: "#94A3B8", fontSize: 14, marginTop: 5 },
 });

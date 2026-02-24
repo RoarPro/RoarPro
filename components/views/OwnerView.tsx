@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import React from "react";
 import {
+  Alert,
   ScrollView,
   StyleSheet,
   Text,
@@ -9,7 +9,7 @@ import {
   View,
 } from "react-native";
 
-// Definimos la interfaz para el Propietario con tipos más precisos
+// Interfaz para el Propietario
 interface OwnerViewProps {
   userName: string;
   farms: any[];
@@ -27,6 +27,20 @@ export default function OwnerView({
 }: OwnerViewProps) {
   const router = useRouter();
 
+  // Función para manejar la navegación al equipo (Staff)
+  const handleNavigateToStaff = () => {
+    if (farms.length > 0) {
+      // Usamos la primera finca por defecto para la gestión de equipo desde el Dashboard
+      const primaryFarmId = farms[0].id;
+      router.push(`/(owner)/farms/${primaryFarmId}/staff/add` as any);
+    } else {
+      Alert.alert(
+        "Finca requerida",
+        "Debes tener al menos una finca registrada para gestionar un equipo.",
+      );
+    }
+  };
+
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
       {/* 1. Header Dinámico */}
@@ -35,7 +49,7 @@ export default function OwnerView({
         <Text style={styles.title}>¡Hola, {userName}!</Text>
       </View>
 
-      {/* 2. Estadísticas Globales (Kpis) */}
+      {/* 2. Estadísticas Globales (KPIs) */}
       <View style={styles.statsRow}>
         <View style={styles.mainCard}>
           <View style={styles.iconBgBlue}>
@@ -90,10 +104,8 @@ export default function OwnerView({
           <Text style={styles.opLabel}>Reportes</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity
-          style={styles.opItem}
-          onPress={() => router.push("/(owner)/employees" as any)}
-        >
+        {/* BOTÓN EDITADO: Ahora apunta a la ruta dinámica de staff/add */}
+        <TouchableOpacity style={styles.opItem} onPress={handleNavigateToStaff}>
           <View style={[styles.iconCircle, { backgroundColor: "#F0FDF4" }]}>
             <Ionicons name="people" size={24} color="#22C55E" />
           </View>

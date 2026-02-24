@@ -1,7 +1,14 @@
 import { supabase } from "@/lib/supabase";
-import { useFocusEffect } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
+import { useFocusEffect, useRouter } from "expo-router";
 import { useCallback, useState } from "react";
-import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
+import {
+  ActivityIndicator,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
 
 // IMPORTACIÓN DE VISTAS POR ROL
 import AdminView from "@/components/views/AdminView";
@@ -12,6 +19,7 @@ import OwnerView from "@/components/views/OwnerView";
 type UserRole = "owner" | "admin" | "operario" | null;
 
 export default function FarmsScreen() {
+  const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [userRole, setUserRole] = useState<UserRole>(null);
   const [userName, setUserName] = useState("");
@@ -23,22 +31,20 @@ export default function FarmsScreen() {
   const loadInitialData = useCallback(async () => {
     try {
       setLoading(true);
-      // Resetear estados para limpieza de sesión
-      setUserRole(null);
-      setFarms([]);
 
       const {
         data: { user },
       } = await supabase.auth.getUser();
-      if (!user) return;
+      if (!user) {
+        setLoading(false);
+        return;
+      }
 
       const userId = user.id;
-
-      // --- A. IDENTIFICACIÓN DE ROL ---
       let detectedRole: UserRole = null;
       let currentFarmId: string | null = null;
 
-      // 1. Buscamos en PROFILES (Unificamos búsqueda según tu nueva estructura)
+      // 1. Buscamos en PROFILES
       const { data: profile } = await supabase
         .from("profiles")
         .select("name, role")
@@ -51,7 +57,7 @@ export default function FarmsScreen() {
         if (profile.role === "owner") {
           detectedRole = "owner";
         } else {
-          // Si el perfil dice que no es owner, buscamos su asignación en employees
+          // 2. Si no es owner, buscamos en la tabla employees
           const { data: empData } = await supabase
             .from("employees")
             .select("role, farm_id")
@@ -65,7 +71,9 @@ export default function FarmsScreen() {
         }
       }
 
+      // 🛑 VALIDACIÓN CRÍTICA: Si no hay rol, detenemos y mostramos error
       if (!detectedRole) {
+        console.log("⚠️ No se encontró rol para el usuario:", userId);
         setUserRole(null);
         setLoading(false);
         return;
@@ -93,7 +101,7 @@ export default function FarmsScreen() {
       if (validFarms.length > 0) {
         const farmIds = validFarms.map((f) => f.id);
 
-        // 1. Biomasa (Cálculo optimizado)
+        // 1. Biomasa
         const { data: batches } = await supabase
           .from("fish_batches")
           .select("current_quantity, average_weight")
@@ -102,20 +110,20 @@ export default function FarmsScreen() {
 
         const totalB =
           batches?.reduce((acc, b) => {
-            const qty = b.current_quantity || 0;
-            const weight = b.average_weight || 0; // asumiendo gramos
-            return acc + (qty * weight) / 1000; // resultado en kg
+            return (
+              acc + ((b.current_quantity || 0) * (b.average_weight || 0)) / 1000
+            );
           }, 0) || 0;
 
         setTotalBiomasa(Number(totalB.toFixed(1)));
 
-        // 2. Alertas de Inventario (Stock bajo)
-        const { count: inventoryCount } = await supabase
+        // 2. Alertas de Inventario
+        const { count } = await supabase
           .from("inventory")
           .select("*", { count: "exact", head: true })
           .in("farm_id", farmIds)
-          .lt("quantity", 20); // Umbral de alerta
-        setAlerts(inventoryCount || 0);
+          .lt("quantity", 20);
+        setAlerts(count || 0);
 
         // 3. Tareas Pendientes
         let tasksQuery = supabase
@@ -128,11 +136,11 @@ export default function FarmsScreen() {
           tasksQuery = tasksQuery.eq("assigned_to", userId);
         }
 
-        const { count: tasksCount } = await tasksQuery;
-        setPendingTasksCount(tasksCount || 0);
+        const { count: tCount } = await tasksQuery;
+        setPendingTasksCount(tCount || 0);
       }
     } catch (error) {
-      console.error("Error en Dashboard Principal:", error);
+      console.error("❌ Error en Dashboard:", error);
     } finally {
       setLoading(false);
     }
@@ -144,6 +152,11 @@ export default function FarmsScreen() {
     }, [loadInitialData]),
   );
 
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+    router.replace("/(auth)/login");
+  };
+
   if (loading) {
     return (
       <View style={styles.center}>
@@ -154,7 +167,6 @@ export default function FarmsScreen() {
   }
 
   // --- RENDERIZADO POR ROL ---
-
   if (userRole === "operario") {
     return (
       <EmployeeView
@@ -191,12 +203,30 @@ export default function FarmsScreen() {
     );
   }
 
+  // --- VISTA DE ERROR / SIN PERMISOS (SALIDA DE EMERGENCIA) ---
   return (
     <View style={styles.center}>
+      <Ionicons
+        name="lock-closed"
+        size={80}
+        color="#E53E3E"
+        style={{ marginBottom: 20 }}
+      />
       <Text style={styles.errorText}>No se detectaron permisos válidos.</Text>
       <Text style={styles.subErrorText}>
-        Contacta al administrador del sistema.
+        Tu cuenta ({userName || "Usuario"}) no tiene un rol asignado. Contacta
+        al soporte.
       </Text>
+
+      <TouchableOpacity style={styles.logoutButton} onPress={handleSignOut}>
+        <Ionicons
+          name="log-out-outline"
+          size={20}
+          color="white"
+          style={{ marginRight: 10 }}
+        />
+        <Text style={styles.logoutButtonText}>Cerrar Sesión</Text>
+      </TouchableOpacity>
     </View>
   );
 }
@@ -207,19 +237,38 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     backgroundColor: "#F8FAFC",
-    padding: 20,
+    padding: 30,
   },
-  loadingText: { marginTop: 15, color: "#0066CC", fontWeight: "600" },
+  loadingText: {
+    marginTop: 15,
+    color: "#0066CC",
+    fontWeight: "600",
+  },
   errorText: {
     color: "#2D3748",
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: "bold",
     textAlign: "center",
   },
   subErrorText: {
     color: "#718096",
-    fontSize: 14,
+    fontSize: 15,
     textAlign: "center",
-    marginTop: 8,
+    marginTop: 10,
+    marginBottom: 30,
+  },
+  logoutButton: {
+    flexDirection: "row",
+    backgroundColor: "#0066CC",
+    paddingVertical: 15,
+    paddingHorizontal: 25,
+    borderRadius: 12,
+    alignItems: "center",
+    elevation: 3,
+  },
+  logoutButtonText: {
+    color: "white",
+    fontWeight: "bold",
+    fontSize: 16,
   },
 });

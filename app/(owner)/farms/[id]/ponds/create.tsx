@@ -35,12 +35,12 @@ export default function CreatePondScreen() {
         throw new Error("No se detectó el ID de la finca en la ruta.");
       }
 
-      // 1. Cargar Bodegas disponibles para esta finca
+      // 1. Cargar Bodegas disponibles para esta finca (Usando nombres corregidos)
       const { data: inventoryData, error: invError } = await supabase
         .from("inventory")
         .select("id, item_name, is_satellite")
         .eq("farm_id", farmId)
-        .order("is_satellite", { ascending: true });
+        .order("is_satellite", { ascending: false }); // Satélites primero para conveniencia
 
       if (invError) throw invError;
       setBodegas(inventoryData || []);
@@ -91,7 +91,7 @@ export default function CreatePondScreen() {
     const pondPayload = {
       name: pondName.trim(),
       farm_id: farmId,
-      inventory_id: selectedInventoryId,
+      inventory_id: selectedInventoryId, // Vínculo con la nueva tabla inventory
       area_m2: parseFloat(cleanArea),
     };
 
@@ -107,8 +107,8 @@ export default function CreatePondScreen() {
       } else {
         const { error } = await supabase.from("ponds").insert({
           ...pondPayload,
-          active: true,
-          current_quantity: 0,
+          active: false, // Inicia inactivo hasta que se realice el Stocking (Siembra)
+          current_stock: 0,
         });
 
         if (error) throw error;
@@ -128,7 +128,7 @@ export default function CreatePondScreen() {
       <View style={[styles.container, styles.center]}>
         <ActivityIndicator size="large" color="#0066CC" />
         <Text style={{ marginTop: 15, color: "#64748B", fontWeight: "500" }}>
-          Sincronizando datos...
+          Cargando configuración...
         </Text>
       </View>
     );
@@ -139,7 +139,6 @@ export default function CreatePondScreen() {
       contentContainerStyle={styles.container}
       keyboardShouldPersistTaps="handled"
     >
-      {/* Botón Volver Manual (Header Personalizado) */}
       <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
         <Ionicons name="arrow-back" size={24} color="#003366" />
       </TouchableOpacity>
@@ -158,14 +157,14 @@ export default function CreatePondScreen() {
         </Text>
         <Text style={styles.subtitle}>
           {isEditing === "true"
-            ? "Modifica los parámetros técnicos de esta unidad de producción."
-            : "Configura las dimensiones y logística del nuevo estanque."}
+            ? "Ajusta los parámetros de producción."
+            : "Vincula el estanque a una bodega para el control de alimento."}
         </Text>
 
         <View style={styles.inputGroup}>
           <Text style={styles.label}>Nombre del Estanque</Text>
           <TextInput
-            placeholder="Ej: Estanque 01 - Engorde"
+            placeholder="Ej: Estanque Norte 01"
             style={styles.input}
             value={pondName}
             onChangeText={setPondName}
@@ -176,7 +175,7 @@ export default function CreatePondScreen() {
         <View style={styles.inputGroup}>
           <Text style={styles.label}>Área Espejo de Agua (m²)</Text>
           <TextInput
-            placeholder="Ej: 500"
+            placeholder="Ej: 450"
             style={styles.input}
             value={area}
             onChangeText={setArea}
@@ -186,7 +185,7 @@ export default function CreatePondScreen() {
         </View>
 
         <View style={styles.inputGroup}>
-          <Text style={styles.label}>Bodega de Alimento</Text>
+          <Text style={styles.label}>Bodega de Abastecimiento</Text>
           <View style={styles.pickerWrapper}>
             <Picker
               selectedValue={selectedInventoryId}
@@ -194,7 +193,7 @@ export default function CreatePondScreen() {
               style={styles.picker}
             >
               <Picker.Item
-                label="Seleccionar bodega..."
+                label="Seleccione de dónde sacará alimento..."
                 value=""
                 color="#94A3B8"
               />
@@ -207,6 +206,9 @@ export default function CreatePondScreen() {
               ))}
             </Picker>
           </View>
+          <Text style={styles.helperText}>
+            * Si la lista está vacía, crea una bodega en el Inventario primero.
+          </Text>
         </View>
 
         <TouchableOpacity
@@ -262,9 +264,6 @@ const styles = StyleSheet.create({
     padding: 25,
     borderRadius: 32,
     elevation: 4,
-    shadowColor: "#000",
-    shadowOpacity: 0.05,
-    shadowRadius: 15,
   },
   iconHeader: {
     alignSelf: "center",
@@ -281,11 +280,11 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   subtitle: {
-    fontSize: 14,
+    fontSize: 13,
     textAlign: "center",
     color: "#64748B",
     marginBottom: 30,
-    lineHeight: 20,
+    lineHeight: 18,
   },
   inputGroup: { marginBottom: 20 },
   label: {
@@ -302,7 +301,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#E2E8F0",
     fontSize: 16,
-    color: "#1E293B",
   },
   pickerWrapper: {
     backgroundColor: "#F8FAFC",
@@ -312,6 +310,7 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   picker: { height: 55, width: "100%" },
+  helperText: { fontSize: 11, color: "#94A3B8", marginTop: 5, marginLeft: 5 },
   button: {
     backgroundColor: "#0066CC",
     padding: 18,
