@@ -24,7 +24,12 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "permissions": ["USE_BIOMETRIC", "USE_FINGERPRINT"]
+      "permissions": [
+        "USE_BIOMETRIC",
+        "USE_FINGERPRINT",
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT"
+      ]
     },
     "web": {
       "output": "static",
@@ -46,6 +51,12 @@
         }
       ],
       "expo-sqlite"
-    ]
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "d9cff20b-29ed-4a6b-b083-8b7925a561bb"
+      }
+    }
   }
 }
