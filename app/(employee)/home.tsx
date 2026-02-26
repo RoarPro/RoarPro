@@ -4,6 +4,7 @@ import { useRouter } from "expo-router";
 import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   ScrollView,
   StyleSheet,
   Text,
@@ -11,14 +12,10 @@ import {
   View,
 } from "react-native";
 
-// Definimos una interfaz estricta para el resultado de la base de datos
+// Interfaz para la respuesta de la finca
 interface EmployeeDataResponse {
   farm_id: string;
-  farms:
-    | {
-        name: string;
-      }
-    | { name: string }[];
+  farms: { name: string } | { name: string }[];
 }
 
 interface ActionButtonProps {
@@ -31,10 +28,7 @@ interface ActionButtonProps {
 export default function EmployeeHomeScreen() {
   const router = useRouter();
   const [userData, setUserData] = useState({ name: "", role: "" });
-  const [farmData, setFarmData] = useState({
-    name: "Cargando finca...",
-    id: "",
-  });
+  const [farmData, setFarmData] = useState({ name: "Cargando...", id: "" });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -54,18 +48,17 @@ export default function EmployeeHomeScreen() {
         .eq("id", user.id)
         .single();
 
-      // Consultamos la relación con la finca
+      // Consultamos a qué finca pertenece este empleado
       const { data: employeeRecord } = await supabase
         .from("employees")
         .select("farm_id, farms(name)")
-        .eq("auth_id", user.id)
+        .eq("id", user.id) // Usamos el ID del usuario
         .single();
 
       if (profile) {
         setUserData({ name: profile.name, role: profile.role });
       }
 
-      // SOLUCIÓN AL ERROR 2339: Validación de tipo para la relación farms
       if (employeeRecord) {
         const record = employeeRecord as unknown as EmployeeDataResponse;
         let farmName = "Finca no encontrada";
@@ -76,18 +69,29 @@ export default function EmployeeHomeScreen() {
             : record.farms.name;
         }
 
-        setFarmData({
-          name: farmName,
-          id: record.farm_id,
-        });
+        setFarmData({ name: farmName, id: record.farm_id });
       } else {
         setFarmData({ name: "Sin finca asignada", id: "" });
       }
     } catch (err) {
-      console.error("Error:", err);
+      console.error("Error cargando datos del empleado:", err);
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleLogout = async () => {
+    Alert.alert("Cerrar Sesión", "¿Estás seguro de que quieres salir?", [
+      { text: "Cancelar", style: "cancel" },
+      {
+        text: "Salir",
+        style: "destructive",
+        onPress: async () => {
+          await supabase.auth.signOut();
+          router.replace("/(auth)/login");
+        },
+      },
+    ]);
   };
 
   if (loading)
@@ -98,9 +102,16 @@ export default function EmployeeHomeScreen() {
     );
 
   return (
-    <ScrollView style={styles.container}>
+    <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+      {/* HEADER OPERATIVO */}
       <View style={styles.header}>
-        <Text style={styles.welcome}>Hola, {userData.name} 👋</Text>
+        <View style={styles.topBar}>
+          <Text style={styles.welcome}>Hola, {userData.name} 👋</Text>
+          <TouchableOpacity onPress={handleLogout} style={styles.logoutBtn}>
+            <MaterialCommunityIcons name="logout" size={22} color="#64748B" />
+          </TouchableOpacity>
+        </View>
+
         <View style={styles.farmBadge}>
           <MaterialCommunityIcons name="map-marker" size={16} color="#0066CC" />
           <Text style={styles.farmText}>{farmData.name}</Text>
@@ -108,31 +119,18 @@ export default function EmployeeHomeScreen() {
       </View>
 
       <View style={styles.content}>
-        <Text style={styles.sectionTitle}>Tareas Diarias</Text>
+        <Text style={styles.sectionTitle}>Registros de hoy</Text>
 
-        {/* SOLUCIÓN AL ERROR 2345: Forzamos el tipo a Href para que Expo Router lo acepte */}
         <ActionButton
           label="Registrar Alimentación"
-          icon={
-            <MaterialCommunityIcons
-              name="plus-circle-outline"
-              size={24}
-              color="white"
-            />
-          }
+          icon={<MaterialCommunityIcons name="fish" size={24} color="white" />}
           color="#0066CC"
           onPress={() => router.push("/(employee)/feeding" as any)}
         />
 
         <ActionButton
-          label="Registrar Parámetros"
-          icon={
-            <MaterialCommunityIcons
-              name="thermometer"
-              size={24}
-              color="white"
-            />
-          }
+          label="Parámetros de Agua"
+          icon={<MaterialCommunityIcons name="waves" size={24} color="white" />}
           color="#00CC99"
           onPress={() => router.push("/(employee)/water" as any)}
         />
@@ -141,7 +139,7 @@ export default function EmployeeHomeScreen() {
           label="Reportar Mortalidad"
           icon={
             <MaterialCommunityIcons
-              name="skull-outline"
+              name="alert-circle-outline"
               size={24}
               color="white"
             />
@@ -149,6 +147,18 @@ export default function EmployeeHomeScreen() {
           color="#CC3333"
           onPress={() => router.push("/(employee)/mortality" as any)}
         />
+
+        {/* ESPACIO PARA TAREAS ASIGNADAS */}
+        <View style={styles.taskNotice}>
+          <MaterialCommunityIcons
+            name="clipboard-text-clock-outline"
+            size={20}
+            color="#475569"
+          />
+          <Text style={styles.taskNoticeText}>
+            Recuerda sincronizar tus datos antes de salir de la finca.
+          </Text>
+        </View>
       </View>
     </ScrollView>
   );
@@ -158,6 +168,7 @@ function ActionButton({ label, icon, color, onPress }: ActionButtonProps) {
   return (
     <TouchableOpacity
       onPress={onPress}
+      activeOpacity={0.7}
       style={[styles.button, { backgroundColor: color }]}
     >
       <View style={styles.iconCircle}>{icon}</View>
@@ -165,68 +176,102 @@ function ActionButton({ label, icon, color, onPress }: ActionButtonProps) {
       <MaterialCommunityIcons
         name="chevron-right"
         size={24}
-        color="rgba(255,255,255,0.5)"
+        color="rgba(255,255,255,0.6)"
       />
     </TouchableOpacity>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#F2F5F7" },
+  container: { flex: 1, backgroundColor: "#F8FAFC" },
   centered: { flex: 1, justifyContent: "center", alignItems: "center" },
   header: {
-    padding: 25,
+    paddingTop: 60,
+    paddingHorizontal: 25,
+    paddingBottom: 25,
     backgroundColor: "white",
-    borderBottomLeftRadius: 30,
-    borderBottomRightRadius: 30,
-    elevation: 2,
+    borderBottomLeftRadius: 35,
+    borderBottomRightRadius: 35,
+    elevation: 4,
+    shadowColor: "#000",
+    shadowOpacity: 0.1,
+    shadowRadius: 10,
   },
-  welcome: { fontSize: 28, fontWeight: "900", color: "#003366" },
+  topBar: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  welcome: { fontSize: 26, fontWeight: "900", color: "#0F172A" },
+  logoutBtn: { padding: 8, backgroundColor: "#F1F5F9", borderRadius: 12 },
   farmBadge: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: 8,
-    backgroundColor: "#E1E8F0",
+    marginTop: 12,
+    backgroundColor: "#E0F2FE",
     paddingHorizontal: 12,
     paddingVertical: 6,
-    borderRadius: 20,
+    borderRadius: 12,
     alignSelf: "flex-start",
   },
   farmText: {
     marginLeft: 6,
-    color: "#0066CC",
-    fontWeight: "600",
-    fontSize: 14,
+    color: "#0369A1",
+    fontWeight: "700",
+    fontSize: 13,
   },
   content: { padding: 20, marginTop: 10 },
   sectionTitle: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#445566",
-    marginBottom: 15,
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#64748B",
+    textTransform: "uppercase",
+    letterSpacing: 1,
+    marginBottom: 20,
     marginLeft: 5,
   },
   button: {
-    padding: 18,
-    borderRadius: 20,
+    padding: 20,
+    borderRadius: 24,
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 15,
-    elevation: 3,
+    marginBottom: 16,
+    elevation: 4,
+    shadowColor: "#000",
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
   },
   iconCircle: {
-    width: 45,
-    height: 45,
-    borderRadius: 22.5,
-    backgroundColor: "rgba(255,255,255,0.2)",
+    width: 48,
+    height: 48,
+    borderRadius: 16,
+    backgroundColor: "rgba(255,255,255,0.25)",
     justifyContent: "center",
     alignItems: "center",
   },
   buttonText: {
     color: "white",
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: "bold",
     marginLeft: 15,
     flex: 1,
+  },
+  taskNotice: {
+    marginTop: 20,
+    flexDirection: "row",
+    backgroundColor: "#F1F5F9",
+    padding: 15,
+    borderRadius: 15,
+    alignItems: "center",
+    borderStyle: "dashed",
+    borderWidth: 1,
+    borderColor: "#CBD5E1",
+  },
+  taskNoticeText: {
+    marginLeft: 10,
+    fontSize: 12,
+    color: "#475569",
+    flex: 1,
+    lineHeight: 18,
   },
 });

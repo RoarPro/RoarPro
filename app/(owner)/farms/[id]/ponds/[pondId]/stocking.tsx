@@ -65,9 +65,10 @@ export default function StockingScreen() {
         species: species.trim(),
         initial_quantity: qtyNum,
         current_quantity: qtyNum,
-        average_weight: weightNum,
+        initial_weight_g: weightNum,
+        average_weight_g: weightNum,
         status: "active",
-        started_at: new Date().toISOString(),
+        start_date: new Date().toISOString(),
       });
 
       if (batchError) throw batchError;
@@ -135,7 +136,7 @@ export default function StockingScreen() {
 
         <View style={styles.row}>
           <View style={{ flex: 1, marginRight: 10 }}>
-            <Text style={styles.label}>Densidad ($P/m^2$)</Text>
+            <Text style={styles.label}>Densidad (Peces/m²)</Text>
             <TextInput
               style={[styles.input, styles.highlightInput]}
               value={density}

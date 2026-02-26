@@ -29,16 +29,16 @@ export default function InventoryScreen() {
 
   const [editingId, setEditingId] = useState<string | null>(null);
 
-  // Nuevos campos separados
+  // Campos de formulario
   const [bodegaName, setBodegaName] = useState("");
   const [insumoName, setInsumoName] = useState("");
-
   const [kgQuantity, setKgQuantity] = useState("");
   const [bultosQuantity, setBultosQuantity] = useState("");
   const [isSatellite, setIsSatellite] = useState(false);
 
   const PESO_BULTO = 40;
 
+  // Lógica de conversión de peso
   const handleKgChange = (val: string) => {
     const text = val.replace(",", ".");
     setKgQuantity(text);
@@ -63,6 +63,7 @@ export default function InventoryScreen() {
     }
   };
 
+  // Carga de datos local (SQLite)
   const loadFromLocal = useCallback(() => {
     if (!farmId) return;
     try {
@@ -83,6 +84,7 @@ export default function InventoryScreen() {
     }
   }, [farmId]);
 
+  // Sincronización con Supabase (Nube a Local)
   const syncData = useCallback(async () => {
     if (!farmId) return;
     try {
@@ -113,7 +115,7 @@ export default function InventoryScreen() {
         loadFromLocal();
       }
     } catch {
-      console.log("Offline mode activo.");
+      console.log("Modo offline activo o error de red.");
     } finally {
       setRefreshing(false);
     }
@@ -124,8 +126,9 @@ export default function InventoryScreen() {
     syncData();
   }, [loadFromLocal, syncData]);
 
+  // Guardar Item (Crear o Actualizar)
   const handleSaveItem = async () => {
-    if (!bodegaName.trim() || !insumoName.trim() || !kgQuantity) {
+    if (!bodegaName.trim() || !insumoName.trim() || !kgQuantity || !farmId) {
       Alert.alert(
         "Campos incompletos",
         "Bodega, Insumo y Cantidad son necesarios.",
@@ -133,17 +136,50 @@ export default function InventoryScreen() {
       return;
     }
 
-    // Unimos los nombres para guardarlos en item_name
     const fullName = `${bodegaName.trim()} - ${insumoName.trim()}`;
     const stockNum = parseFloat(kgQuantity);
-    const finalId = editingId || Math.random().toString(36).substring(2, 15);
 
     try {
+      let officialId = editingId;
+
+      if (editingId) {
+        // MODO EDICIÓN: Actualizamos en Supabase
+        const { error: updateError } = await supabase
+          .from("inventory")
+          .update({
+            item_name: fullName,
+            stock_actual: stockNum,
+            unit: "kg",
+            is_satellite: isSatellite,
+          })
+          .eq("id", editingId);
+
+        if (updateError) throw updateError;
+      } else {
+        // MODO CREACIÓN: Insertamos nuevo en Supabase
+        const { data: newItems, error: insertError } = await supabase
+          .from("inventory")
+          .insert([
+            {
+              farm_id: farmId,
+              item_name: fullName,
+              stock_actual: stockNum,
+              unit: "kg",
+              is_satellite: isSatellite,
+            },
+          ])
+          .select();
+
+        if (insertError) throw insertError;
+        officialId = newItems[0].id; // Tomamos el nuevo ID generado
+      }
+
+      // GUARDADO LOCAL (Insert or Replace funciona para ambos casos)
       db.runSync(
         `INSERT OR REPLACE INTO local_inventory (id, farm_id, item_name, stock_actual, unit, is_satellite) 
          VALUES (?, ?, ?, ?, ?, ?)`,
         [
-          finalId,
+          officialId,
           String(farmId),
           fullName,
           stockNum,
@@ -156,19 +192,68 @@ export default function InventoryScreen() {
       setModalVisible(false);
       resetForm();
 
-      await supabase.from("inventory").upsert([
-        {
-          id: finalId,
-          farm_id: farmId,
-          item_name: fullName,
-          stock_actual: stockNum,
-          unit: "kg",
-          is_satellite: isSatellite,
-        },
-      ]);
-    } catch {
-      console.log("Guardado local exitoso.");
+      Alert.alert(
+        "¡Éxito!",
+        editingId ? "Insumo actualizado." : "Insumo guardado correctamente.",
+      );
+    } catch (err: any) {
+      console.error("Error al guardar:", err.message);
+      Alert.alert("Error de red", "No se pudo sincronizar con la nube.");
     }
+  };
+
+  // Función para Eliminar con doble confirmación y limpieza de fantasmas
+  const handleDeleteItem = () => {
+    if (!editingId) return;
+
+    Alert.alert(
+      "Eliminar Insumo",
+      "¿Estás seguro de que deseas eliminar este insumo? Esta acción no se puede deshacer.",
+      [
+        { text: "Cancelar", style: "cancel" },
+        {
+          text: "Sí, Eliminar",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              // 1. Intentar borrar de la nube
+              const { error: deleteError } = await supabase
+                .from("inventory")
+                .delete()
+                .eq("id", editingId);
+
+              // Si da error de UUID inválido, es un dato viejo de prueba. Lo ignoramos en la nube.
+              if (
+                deleteError &&
+                !deleteError.message.includes(
+                  "invalid input syntax for type uuid",
+                )
+              ) {
+                throw deleteError; // Si es un error real de red, sí lo mostramos
+              }
+
+              // 2. Borrar localmente SIEMPRE (para limpiar tu pantalla)
+              db.runSync(`DELETE FROM local_inventory WHERE id = ?`, [
+                editingId,
+              ]);
+
+              // 3. Actualizar pantalla
+              loadFromLocal();
+              setModalVisible(false);
+              resetForm();
+
+              Alert.alert(
+                "Eliminado",
+                "El insumo ha sido retirado del inventario.",
+              );
+            } catch (err: any) {
+              console.error("Error al eliminar:", err.message);
+              Alert.alert("Error", "No se pudo eliminar el insumo.");
+            }
+          },
+        },
+      ],
+    );
   };
 
   const resetForm = () => {
@@ -206,7 +291,6 @@ export default function InventoryScreen() {
             style={styles.card}
             onPress={() => {
               setEditingId(item.id);
-              // Intentamos separar el nombre si contiene el guión
               const parts = item.item_name.split(" - ");
               setBodegaName(parts[0] || "");
               setInsumoName(parts[1] || "");
@@ -252,7 +336,6 @@ export default function InventoryScreen() {
         }
       />
 
-      {/* BOTONES DE ACCIÓN INFERIORES */}
       <View style={styles.bottomActions}>
         <TouchableOpacity
           style={[styles.actionBtn, { backgroundColor: "#475569" }]}
@@ -285,16 +368,29 @@ export default function InventoryScreen() {
             behavior={Platform.OS === "ios" ? "padding" : "height"}
             style={styles.modal}
           >
-            <Text style={styles.modalTitle}>
-              {editingId ? "Editar Bodega" : "Nueva Bodega"}
-            </Text>
+            {/* CABECERA DEL MODAL CON BOTÓN DE ELIMINAR OCULTO */}
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>
+                {editingId ? "Editar Bodega" : "Nueva Bodega"}
+              </Text>
+
+              {/* Botón de papelera solo visible si se está editando */}
+              {editingId && (
+                <TouchableOpacity
+                  onPress={handleDeleteItem}
+                  style={{ padding: 5 }}
+                >
+                  <Ionicons name="trash-outline" size={24} color="#EF4444" />
+                </TouchableOpacity>
+              )}
+            </View>
 
             <Text style={styles.label}>Nombre de la Bodega</Text>
             <TextInput
               style={styles.input}
               value={bodegaName}
               onChangeText={setBodegaName}
-              placeholder="Ej: Bodega Norte"
+              placeholder="Ej: Bodega Principal"
             />
 
             <Text style={styles.label}>Insumo (Alimento)</Text>
@@ -302,7 +398,7 @@ export default function InventoryScreen() {
               style={styles.input}
               value={insumoName}
               onChangeText={setInsumoName}
-              placeholder="Ej: Engorde 40%"
+              placeholder="Ej: Inicio 45%"
             />
 
             <View style={styles.row}>
@@ -404,11 +500,15 @@ const styles = StyleSheet.create({
     padding: 20,
   },
   modal: { backgroundColor: "white", borderRadius: 25, padding: 25 },
+  modalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 20,
+  },
   modalTitle: {
     fontSize: 18,
     fontWeight: "bold",
-    marginBottom: 20,
-    textAlign: "center",
   },
   label: {
     fontSize: 12,

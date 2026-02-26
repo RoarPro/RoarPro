@@ -3,16 +3,16 @@ import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useState } from "react";
 import {
-    ActivityIndicator,
-    Alert,
-    KeyboardAvoidingView,
-    Platform,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 
 export default function SamplingScreen() {
@@ -24,34 +24,43 @@ export default function SamplingScreen() {
   const [loading, setLoading] = useState(false);
 
   const handleRecordSampling = async () => {
+    if (!weight) return Alert.alert("Error", "Ingresa el peso promedio.");
+
     const weightNum = parseFloat(weight.replace(",", "."));
-
-    if (!weight || isNaN(weightNum) || weightNum <= 0) {
-      return Alert.alert(
-        "Dato inválido",
-        "Por favor ingresa el peso promedio en gramos.",
-      );
-    }
-
     setLoading(true);
-    try {
-      const { error } = await supabase.from("sampling_records").insert({
-        farm_id: farmId,
-        pond_id: pondId,
-        average_weight_g: weightNum,
-        notes: notes.trim(),
-      });
 
-      if (error) throw error;
+    try {
+      // 1. Guardar en el HISTORIAL
+      const { error: historyError } = await supabase
+        .from("sampling_records") // Tu tabla de logs
+        .insert({
+          farm_id: farmId,
+          pond_id: pondId,
+          average_weight_g: weightNum, // Nombre exacto de tu SQL
+          notes: notes.trim(),
+        });
+
+      if (historyError) throw historyError;
+
+      // 2. Actualizar el ESTADO ACTUAL del lote
+      const { error: batchUpdateError } = await supabase
+        .from("fish_batches") // Tu tabla maestra
+        .update({
+          average_weight_g: weightNum, // Actualizamos el peso actual
+        })
+        .eq("pond_id", pondId)
+        .eq("status", "active");
+
+      if (batchUpdateError) throw batchUpdateError;
 
       Alert.alert(
-        "Muestreo Registrado",
-        `El peso promedio del estanque se ha actualizado a ${weightNum}g.`,
+        "¡Éxito!",
+        "Pesaje registrado y lote actualizado correctamente.",
       );
       router.back();
     } catch (error: any) {
-      console.error(error);
-      Alert.alert("Error", "No se pudo guardar el muestreo.");
+      Alert.alert("Error", "No se pudo sincronizar el pesaje.");
+      console.error("Error en DB:", error.message);
     } finally {
       setLoading(false);
     }

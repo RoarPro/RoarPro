@@ -1,6 +1,5 @@
-import { db } from "@/lib/localDb"; // Importamos la DB local
 import { supabase } from "@/lib/supabase";
-import { Ionicons } from "@expo/vector-icons";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons"; // Añadimos Material para iconos de campo
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
@@ -20,11 +19,23 @@ export default function FarmDashboard() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
+  // --- NUEVO: ESTADO DE ROL ---
+  const [role, setRole] = useState<string | null>(null);
+
   const [stats, setStats] = useState({
     totalBiomass: 0,
     totalFood: 0,
     activeAlerts: 0,
+    dailyConsumption: 0,
+    autonomyDays: 0,
   });
+
+  const getTechnicalRate = (weightGr: number) => {
+    if (weightGr <= 20) return 0.08;
+    if (weightGr <= 150) return 0.05;
+    if (weightGr <= 500) return 0.03;
+    return 0.015;
+  };
 
   const fetchDashboardData = useCallback(async () => {
     if (!id || id === "[id]" || id === "undefined") return;
@@ -32,88 +43,77 @@ export default function FarmDashboard() {
     try {
       setLoading(true);
 
-      // --- 1. INTENTAR CARGAR DESDE LOCAL PRIMERO (Para velocidad) ---
-      const localFarm = db.getFirstSync(
-        "SELECT * FROM local_farms WHERE id = ?",
-        [String(id)],
-      );
-      if (localFarm) setFarm(localFarm);
+      // --- 1. DETECCIÓN DE ROL (El motor del camaleón) ---
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (user) {
+        const { data: profile } = await supabase
+          .from("profiles")
+          .select("role")
+          .eq("id", user.id)
+          .single();
+        setRole(profile?.role || null);
+      }
 
-      const localInv = db.getAllSync(
-        "SELECT stock_actual FROM local_inventory WHERE farm_id = ?",
-        [String(id)],
-      );
-      const localFoodSum = localInv.reduce(
-        (acc: number, curr: any) => acc + (curr.stock_actual || 0),
-        0,
-      );
-
-      setStats((prev) => ({ ...prev, totalFood: localFoodSum }));
-
-      // --- 2. CONSULTAR SUPABASE PARA ACTUALIZAR ---
-      // Detalles de la finca
-      const { data: farmData, error: farmError } = await supabase
+      // --- 2. DATOS DE LA FINCA ---
+      const { data: farmData } = await supabase
         .from("farms")
         .select("*")
         .eq("id", id)
         .single();
+      if (farmData) setFarm(farmData);
 
-      if (!farmError && farmData) {
-        setFarm(farmData);
-        // Guardar/Actualizar en Local
-        db.runSync(
-          "INSERT OR REPLACE INTO local_farms (id, name, location) VALUES (?, ?, ?)",
-          [farmData.id, farmData.name, farmData.location || ""],
-        );
-      }
-
-      // Biomasa (Peces activos)
+      // --- 3. CÁLCULOS (Tu lógica original intacta) ---
       const { data: batches } = await supabase
         .from("fish_batches")
-        .select("current_quantity, average_weight")
+        .select("pond_id, current_quantity, average_weight_g")
         .eq("farm_id", id)
         .eq("status", "active");
 
-      const totalBiomass =
-        batches?.reduce((acc, batch) => {
-          return (
-            acc +
-            ((batch.current_quantity || 0) * (batch.average_weight || 0)) / 1000
-          );
-        }, 0) || 0;
+      let totalBiomassCalc = 0;
+      let theoreticalConsumption = 0;
+      const activePondIds: string[] = [];
 
-      // Inventario (Alimento)
-      const { data: invData } = await supabase
-        .from("inventory")
-        .select("*")
-        .eq("farm_id", id);
+      batches?.forEach((batch) => {
+        if (batch.pond_id) activePondIds.push(batch.pond_id);
+        const qty = batch.current_quantity || 0;
+        const weight = batch.average_weight_g || 0;
+        const biomass = (qty * weight) / 1000;
+        totalBiomassCalc += biomass;
+        theoreticalConsumption += biomass * getTechnicalRate(weight);
+      });
 
-      if (invData) {
-        // Sincronizar tabla de inventario local
-        db.withTransactionSync(() => {
-          invData.forEach((item) => {
-            db.runSync(
-              `INSERT OR REPLACE INTO local_inventory 
-              (id, farm_id, item_name, stock_actual, unit, is_satellite) 
-              VALUES (?, ?, ?, ?, ?, ?)`,
-              [
-                item.id,
-                item.farm_id,
-                item.item_name,
-                item.stock_actual,
-                item.unit,
-                item.is_satellite ? 1 : 0,
-              ],
-            );
-          });
-        });
+      let realDailyConsumption = 0;
+      if (activePondIds.length > 0) {
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+        const { data: recentFeedings } = await supabase
+          .from("feeding_logs")
+          .select("amount_kg")
+          .in("pond_id", activePondIds)
+          .gte("created_at", sevenDaysAgo.toISOString());
+
+        const totalFedLast7Days =
+          recentFeedings?.reduce((sum, log) => sum + (log.amount_kg || 0), 0) ||
+          0;
+        realDailyConsumption = totalFedLast7Days / 7;
       }
 
-      const totalFood =
-        invData?.reduce((acc, curr) => acc + (curr.stock_actual || 0), 0) ||
-        localFoodSum;
+      const consumptionToUse =
+        realDailyConsumption > 0
+          ? realDailyConsumption
+          : theoreticalConsumption;
 
-      // Alertas
+      const { data: invData } = await supabase
+        .from("inventory")
+        .select("stock_actual")
+        .eq("farm_id", id);
+      const totalFoodCalc =
+        invData?.reduce((acc, curr) => acc + (curr.stock_actual || 0), 0) || 0;
+      const autonomyDaysCalc =
+        consumptionToUse > 0 ? Math.floor(totalFoodCalc / consumptionToUse) : 0;
+
       const { count: alertsCount } = await supabase
         .from("field_reports")
         .select("*", { count: "exact", head: true })
@@ -121,12 +121,14 @@ export default function FarmDashboard() {
         .eq("resolved", false);
 
       setStats({
-        totalBiomass: Number(totalBiomass.toFixed(1)),
-        totalFood: Number(totalFood.toFixed(1)),
+        totalBiomass: Number(totalBiomassCalc.toFixed(1)),
+        totalFood: Number(totalFoodCalc.toFixed(1)),
         activeAlerts: alertsCount || 0,
+        dailyConsumption: Number(consumptionToUse.toFixed(1)),
+        autonomyDays: autonomyDaysCalc,
       });
-    } catch {
-      console.log("Modo Offline: Usando datos locales");
+    } catch (error) {
+      console.log("Error cargando dashboard:", error);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -137,13 +139,44 @@ export default function FarmDashboard() {
     fetchDashboardData();
   }, [fetchDashboardData]);
 
-  if (loading && !refreshing) {
+  const autonomyStyle = (days: number, consumption: number) => {
+    if (consumption === 0)
+      return {
+        bg: "#F1F5F9",
+        text: "#64748B",
+        icon: "information-outline",
+        status: "Sin consumo",
+      };
+    if (days > 15)
+      return {
+        bg: "#F0FDF4",
+        text: "#166534",
+        icon: "check-decagram-outline",
+        status: "Saludable",
+      };
+    if (days >= 7)
+      return {
+        bg: "#FFF7ED",
+        text: "#9A3412",
+        icon: "alert-outline",
+        status: "Planificar",
+      };
+    return {
+      bg: "#FEF2F2",
+      text: "#991B1B",
+      icon: "alert-octagon-outline",
+      status: "Crítico",
+    };
+  };
+
+  const style = autonomyStyle(stats.autonomyDays, stats.dailyConsumption);
+
+  if (loading && !refreshing)
     return (
       <View style={styles.center}>
         <ActivityIndicator size="large" color="#0066CC" />
       </View>
     );
-  }
 
   return (
     <ScrollView
@@ -158,28 +191,29 @@ export default function FarmDashboard() {
         />
       }
     >
+      {/* HEADER DINÁMICO */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.replace("/(owner)/farms/")}>
-          <Ionicons name="arrow-back" size={28} color="white" />
-        </TouchableOpacity>
+        {/* Solo el Dueño ve el botón de atrás a la lista de fincas */}
+        {role === "owner" ? (
+          <TouchableOpacity onPress={() => router.replace("/(owner)/farms/")}>
+            <Ionicons name="arrow-back" size={28} color="white" />
+          </TouchableOpacity>
+        ) : (
+          <View style={{ width: 28 }} /> // Espacio para mantener el título centrado
+        )}
+
         <View style={styles.headerInfo}>
-          <Text style={styles.headerSubtitle}>Gestión de</Text>
+          <Text style={styles.headerSubtitle}>Panel de Control</Text>
           <Text style={styles.headerTitle}>{farm?.name || "Finca"}</Text>
         </View>
-        <TouchableOpacity
-          onPress={() => {
-            setRefreshing(true);
-            fetchDashboardData();
-          }}
-        >
+        <TouchableOpacity onPress={fetchDashboardData}>
           <Ionicons name="refresh-circle" size={32} color="white" />
         </TouchableOpacity>
       </View>
 
       <View style={styles.content}>
-        {/* KPIs */}
+        {/* KPIs GENERALES (Todos los ven, es info útil) */}
         <View style={styles.statsCard}>
-          <Text style={styles.statsTitle}>Estado Operativo (Sincronizado)</Text>
           <View style={styles.statsRow}>
             <StatItem
               label="Biomasa (kg)"
@@ -199,17 +233,78 @@ export default function FarmDashboard() {
           </View>
         </View>
 
-        <Text style={styles.sectionTitle}>Menú de Control</Text>
+        {/* 1. SECCIÓN DE ACCIONES DE CAMPO (Solo Operario y Administrador) */}
+        {(role === "operario" || role === "administrador") && (
+          <>
+            <Text style={styles.sectionTitle}>Registros Diarios</Text>
+            <View style={styles.actionGrid}>
+              <QuickAction
+                label="Alimento"
+                icon="food-apple"
+                color="#0066CC"
+                onPress={() =>
+                  router.push(`/(employee)/feeding?farmId=${id}` as any)
+                }
+              />
+              <QuickAction
+                label="Parámetros"
+                icon="water-percent"
+                color="#00CC99"
+                onPress={() =>
+                  router.push(`/(employee)/water?farmId=${id}` as any)
+                }
+              />
+              <QuickAction
+                label="Mortalidad"
+                icon="skull-crossbones"
+                color="#CC3333"
+                onPress={() =>
+                  router.push(`/(employee)/mortality?farmId=${id}` as any)
+                }
+              />
+            </View>
+          </>
+        )}
 
+        {/* 2. TARJETA DE AUTONOMÍA (Solo Dueño, Socio y Administrador) */}
+        {(role === "owner" || role === "socio" || role === "administrador") && (
+          <View style={[styles.autonomyCard, { backgroundColor: style.bg }]}>
+            <View style={styles.autonomyHeader}>
+              <MaterialCommunityIcons
+                name={style.icon as any}
+                size={22}
+                color={style.text}
+              />
+              <Text style={[styles.autonomyStatus, { color: style.text }]}>
+                {style.status}
+              </Text>
+            </View>
+            <View style={styles.autonomyBody}>
+              <Text style={[styles.autonomyDays, { color: style.text }]}>
+                {stats.dailyConsumption > 0 ? stats.autonomyDays : "--"}{" "}
+                <Text style={styles.autonomyLabel}>días</Text>
+              </Text>
+              <View style={styles.autonomyDetails}>
+                <Text style={styles.autonomyDetailText}>
+                  Consumo:{" "}
+                  <Text style={{ fontWeight: "bold" }}>
+                    {stats.dailyConsumption} Kg/día
+                  </Text>
+                </Text>
+                <Text style={styles.autonomyDetailText}>
+                  Bodega:{" "}
+                  <Text style={{ fontWeight: "bold" }}>
+                    {stats.totalFood} Kg
+                  </Text>
+                </Text>
+              </View>
+            </View>
+          </View>
+        )}
+
+        {/* 3. MENÚ DE CONTROL (Filtrado por Rol) */}
+        <Text style={styles.sectionTitle}>Gestión</Text>
         <View style={styles.menuGrid}>
-          {/* ACCESO AL INVENTARIO - IMPORTANTE */}
-          <MenuButton
-            icon="clipboard"
-            label="Inventario"
-            color="#003366"
-            onPress={() => router.push(`/(owner)/inventory?id=${id}`)} // Ajustado para que reciba el id de la finca
-          />
-
           <MenuButton
             icon="water"
             label="Estanques"
@@ -217,26 +312,55 @@ export default function FarmDashboard() {
             onPress={() => router.push(`/(owner)/farms/${id}/ponds` as any)}
           />
 
-          <MenuButton
-            icon="people"
-            label="Personal"
-            color="#FFA000"
-            onPress={() => router.push(`/(owner)/farms/${id}/staff` as any)}
-          />
+          {/* Solo el dueño puede ver Personal */}
+          {role === "owner" && (
+            <MenuButton
+              icon="people"
+              label="Personal"
+              color="#FFA000"
+              onPress={() => router.push(`/(owner)/farms/${id}/staff` as any)}
+            />
+          )}
 
-          <MenuButton
-            icon="analytics"
-            label="Reportes"
-            color="#6B46C1"
-            onPress={() => router.push("/(owner)/reports" as any)}
-          />
+          {/* Dueño, Socio y Admin ven Inventario y Reportes */}
+          {(role === "owner" ||
+            role === "socio" ||
+            role === "administrador") && (
+            <>
+              <MenuButton
+                icon="clipboard"
+                label="Inventario"
+                color="#003366"
+                onPress={() =>
+                  router.push(`/(owner)/inventory?id=${id}` as any)
+                }
+              />
+              <MenuButton
+                icon="analytics"
+                label="Reportes"
+                color="#6B46C1"
+                onPress={() => router.push("/(owner)/reports" as any)}
+              />
+            </>
+          )}
         </View>
       </View>
     </ScrollView>
   );
 }
 
-// Sub-componentes (MenuButton y StatItem) se mantienen igual...
+// --- COMPONENTES AUXILIARES ---
+
+const QuickAction = ({ label, icon, color, onPress }: any) => (
+  <TouchableOpacity
+    style={[styles.actionBox, { backgroundColor: color }]}
+    onPress={onPress}
+  >
+    <MaterialCommunityIcons name={icon} size={26} color="white" />
+    <Text style={styles.actionLabel}>{label}</Text>
+  </TouchableOpacity>
+);
+
 const MenuButton = ({ icon, label, color, onPress }: any) => (
   <TouchableOpacity style={styles.menuBox} onPress={onPress}>
     <View style={[styles.iconBox, { backgroundColor: color }]}>
@@ -276,12 +400,78 @@ const styles = StyleSheet.create({
   headerTitle: { color: "white", fontSize: 24, fontWeight: "900" },
   content: { padding: 20 },
   sectionTitle: {
-    fontSize: 19,
+    fontSize: 16,
     fontWeight: "bold",
     color: "#003366",
     marginTop: 25,
     marginBottom: 15,
+    textTransform: "uppercase",
+    letterSpacing: 1,
   },
+  statsCard: {
+    backgroundColor: "white",
+    borderRadius: 25,
+    padding: 22,
+    marginTop: -50,
+    elevation: 8,
+    marginBottom: 20,
+  },
+  statsRow: { flexDirection: "row", justifyContent: "space-around" },
+  statItem: { alignItems: "center" },
+  statValue: { fontSize: 20, fontWeight: "bold" },
+  statLabel: { fontSize: 11, color: "#64748B", marginTop: 4 },
+
+  // Acciones rápidas (NUEVO)
+  actionGrid: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: 10,
+  },
+  actionBox: {
+    width: "31%",
+    padding: 15,
+    borderRadius: 20,
+    alignItems: "center",
+    elevation: 3,
+  },
+  actionLabel: {
+    color: "white",
+    fontSize: 11,
+    fontWeight: "bold",
+    marginTop: 8,
+  },
+
+  autonomyCard: {
+    borderRadius: 20,
+    padding: 18,
+    marginBottom: 10,
+    elevation: 2,
+  },
+  autonomyHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 12,
+  },
+  autonomyStatus: {
+    fontSize: 11,
+    fontWeight: "800",
+    textTransform: "uppercase",
+  },
+  autonomyBody: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  autonomyDays: { fontSize: 36, fontWeight: "900" },
+  autonomyLabel: { fontSize: 14, fontWeight: "600", color: "#64748B" },
+  autonomyDetails: {
+    backgroundColor: "rgba(255,255,255,0.4)",
+    padding: 10,
+    borderRadius: 12,
+  },
+  autonomyDetailText: { fontSize: 11, color: "#475569" },
+
   menuGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -291,37 +481,18 @@ const styles = StyleSheet.create({
     width: "47%",
     backgroundColor: "white",
     borderRadius: 24,
-    padding: 22,
+    padding: 20,
     marginBottom: 18,
     alignItems: "center",
     elevation: 4,
   },
   iconBox: {
-    width: 55,
-    height: 55,
-    borderRadius: 18,
+    width: 50,
+    height: 50,
+    borderRadius: 15,
     justifyContent: "center",
     alignItems: "center",
     marginBottom: 12,
   },
-  menuLabel: { fontSize: 15, fontWeight: "700", color: "#334155" },
-  statsCard: {
-    backgroundColor: "white",
-    borderRadius: 25,
-    padding: 22,
-    marginTop: -40,
-    elevation: 8,
-  },
-  statsTitle: {
-    fontSize: 11,
-    fontWeight: "800",
-    color: "#94A3B8",
-    marginBottom: 15,
-    textAlign: "center",
-    textTransform: "uppercase",
-  },
-  statsRow: { flexDirection: "row", justifyContent: "space-around" },
-  statItem: { alignItems: "center" },
-  statValue: { fontSize: 20, fontWeight: "bold" },
-  statLabel: { fontSize: 11, color: "#64748B", marginTop: 4 },
+  menuLabel: { fontSize: 14, fontWeight: "700", color: "#334155" },
 });

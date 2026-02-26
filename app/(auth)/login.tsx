@@ -29,18 +29,25 @@ export default function LoginScreen() {
   };
 
   // --- LÓGICA DE REDIRECCIÓN BASADA EN ROLES ---
-  const redirectUser = useCallback(
-    (role: string | null | undefined) => {
-      if (role === "owner") {
-        router.replace("/(owner)/farms"); // Redirigimos a la lista de fincas del dueño
-      } else if (role === "employee") {
-        router.replace("/(employee)/home"); // Redirigimos al panel operativo
-      } else {
-        Alert.alert("Error", "Rol de usuario no identificado.");
-      }
-    },
-    [router],
-  );
+  const redirectUser = useCallback(async (role: string, userId: string) => {
+  if (role === "owner") {
+    router.replace("/(owner)/farms");
+  } else {
+    // Si es operario, administrador o socio, buscamos su finca
+    const { data: emp } = await supabase
+      .from("employees")
+      .select("farm_id")
+      .eq("id", userId)
+      .single();
+
+    if (emp?.farm_id) {
+      // LO MANDAMOS DIRECTO A LA RUTA DEL OWNER PERO A SU FINCA
+      router.replace(`/(owner)/farms/${emp.farm_id}` as any);
+    } else {
+      Alert.alert("Error", "No tienes una finca asignada.");
+    }
+  }
+}, [router]);
 
   // --- AUTENTICACIÓN BIOMÉTRICA ---
   const handleBiometricAuth = useCallback(async () => {
@@ -63,7 +70,7 @@ export default function LoginScreen() {
             .eq("id", session.user.id)
             .single();
 
-          redirectUser(profile?.role);
+          redirectUser(profile?.role, session.user.id);
         } else {
           // Si no hay sesión activa, intentamos usar credenciales guardadas
           const savedEmail = await AsyncStorage.getItem("userEmail");
@@ -81,7 +88,7 @@ export default function LoginScreen() {
                 .select("role")
                 .eq("id", data.user.id)
                 .single();
-              redirectUser(profile?.role);
+              redirectUser(profile?.role, data.user.id);
             }
           } else {
             Alert.alert(
@@ -166,7 +173,7 @@ export default function LoginScreen() {
           profile = newProfile;
         }
 
-        redirectUser(profile?.role);
+        redirectUser(profile?.role, data.user.id);
       }
     } catch (err: any) {
       Alert.alert(

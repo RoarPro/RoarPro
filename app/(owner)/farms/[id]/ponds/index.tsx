@@ -1,7 +1,7 @@
 import { supabase } from "@/lib/supabase";
 import { Ionicons } from "@expo/vector-icons";
-import { useLocalSearchParams, useRouter } from "expo-router";
-import { useCallback, useEffect, useState } from "react";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import { useCallback, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -19,7 +19,7 @@ type Pond = {
   active: boolean;
   farm_id: string;
   inventory_id: string | null;
-  current_stock: number;
+  current_quantity: number;
   area_m2: number;
 };
 
@@ -38,7 +38,7 @@ export default function PondsScreen() {
       const { data: pondsData, error: pondsError } = await supabase
         .from("ponds")
         .select(
-          "id, name, active, farm_id, inventory_id, current_stock, area_m2",
+          "id, name, active, farm_id, inventory_id, current_quantity, area_m2",
         )
         .eq("farm_id", farmId)
         .order("created_at", { ascending: false });
@@ -57,9 +57,12 @@ export default function PondsScreen() {
     }
   }, [farmId]);
 
-  useEffect(() => {
-    loadPonds();
-  }, [loadPonds]);
+  // 🔥 Esta es la clave: Actualiza la lista cada vez que vuelves a esta pantalla
+  useFocusEffect(
+    useCallback(() => {
+      loadPonds();
+    }, [loadPonds]),
+  );
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -67,9 +70,9 @@ export default function PondsScreen() {
   };
 
   const renderItem = ({ item }: { item: Pond }) => {
-    const hasFish = (item.current_stock || 0) > 0;
+    // Usamos current_quantity para verificar si hay peces
+    const hasFish = (item.current_quantity || 0) > 0;
 
-    // ✅ Solución al Error 2322: Usar 'as any' para calmar a TypeScript en rutas dinámicas
     const goToDetail = () => {
       router.push(`/(owner)/farms/${farmId}/ponds/${item.id}` as any);
     };
@@ -135,7 +138,7 @@ export default function PondsScreen() {
                   { color: hasFish ? "#2B6CB0" : "#718096" },
                 ]}
               >
-                {item.current_stock || 0} peces
+                {item.current_quantity || 0} peces
               </Text>
             </View>
           </View>
@@ -247,7 +250,6 @@ export default function PondsScreen() {
             <View style={styles.empty}>
               <Ionicons name="water-outline" size={80} color="#CBD5E0" />
               <Text style={styles.emptyText}>No hay estanques</Text>
-              {/* ✅ Solución Error ESLint: Quitar comillas del texto */}
               <Text style={styles.emptySub}>
                 Presiona el botón Nuevo para crear el primero
               </Text>

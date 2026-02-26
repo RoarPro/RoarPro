@@ -19,6 +19,7 @@ export default function AddEmployeeScreen() {
   const { id } = useLocalSearchParams();
 
   const [fullName, setFullName] = useState("");
+  const [phone, setPhone] = useState(""); // <-- NUEVO ESTADO PARA EL TELÉFONO
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [selectedRoleId, setSelectedRoleId] = useState("operario");
@@ -44,7 +45,7 @@ export default function AddEmployeeScreen() {
 
   const handleCreateEmployee = async () => {
     if (!fullName || !username || !password) {
-      Alert.alert("Error", "Por favor completa todos los campos");
+      Alert.alert("Error", "Por favor completa todos los campos obligatorios");
       return;
     }
 
@@ -67,7 +68,7 @@ export default function AddEmployeeScreen() {
       if (authError) throw authError;
 
       if (authData.user) {
-        // 3. Insertar en la tabla 'employees'
+        // 3. Insertar en la tabla 'employees' con el número de teléfono
         const { error: employeeError } = await supabase
           .from("employees")
           .insert([
@@ -77,6 +78,7 @@ export default function AddEmployeeScreen() {
               farm_id: id,
               full_name: fullName,
               role: selectedRoleId,
+              phone: phone, // <-- GUARDAMOS EL TELÉFONO EN LA BASE DE DATOS
               is_active: true,
             },
           ]);
@@ -94,8 +96,8 @@ export default function AddEmployeeScreen() {
             {
               text: "Entendido",
               onPress: () => {
-                // Compartimos credenciales y volvemos al Login
-                const msg = `*Acceso AquaViva*\n👤 Usuario: ${username}\n🔑 Clave: ${password}`;
+                // Compartimos credenciales (Ahora incluye el teléfono registrado)
+                const msg = `*Acceso AquaViva*\n👤 Usuario: ${username}\n🔑 Clave: ${password}\n📱 Celular registrado: ${phone || "Ninguno"}`;
                 Share.share({ message: msg });
                 router.replace("/(auth)/login");
               },
@@ -114,6 +116,7 @@ export default function AddEmployeeScreen() {
     <ScrollView
       style={styles.container}
       contentContainerStyle={{ paddingBottom: 40 }}
+      showsVerticalScrollIndicator={false}
     >
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()}>
@@ -128,14 +131,28 @@ export default function AddEmployeeScreen() {
         <TextInput
           style={styles.input}
           placeholder="Ej: Pedro Pérez"
+          placeholderTextColor="#94A3B8"
           value={fullName}
           onChangeText={setFullName}
+        />
+
+        {/* <-- NUEVO CAMPO DE TELÉFONO --> */}
+        <Text style={styles.label}>Número de Celular / WhatsApp</Text>
+        <TextInput
+          style={styles.input}
+          placeholder="Ej: 3201234567"
+          placeholderTextColor="#94A3B8"
+          value={phone}
+          onChangeText={setPhone}
+          keyboardType="phone-pad"
+          maxLength={10} // Límite estándar para números en Colombia
         />
 
         <Text style={styles.label}>Nombre de Usuario</Text>
         <TextInput
           style={styles.input}
           placeholder="Ej: pedro2026"
+          placeholderTextColor="#94A3B8"
           autoCapitalize="none"
           value={username}
           onChangeText={setUsername}
@@ -145,12 +162,13 @@ export default function AddEmployeeScreen() {
         <TextInput
           style={styles.input}
           placeholder="Mínimo 6 caracteres"
+          placeholderTextColor="#94A3B8"
           secureTextEntry
           value={password}
           onChangeText={setPassword}
         />
 
-        <Text style={[styles.label, { marginBottom: 12 }]}>
+        <Text style={[styles.label, { marginBottom: 12, marginTop: 10 }]}>
           Nivel de Permisos
         </Text>
         {roles.map((item) => (
@@ -226,6 +244,7 @@ const styles = StyleSheet.create({
     padding: 15,
     fontSize: 16,
     marginBottom: 20,
+    color: "#0F172A",
   },
   levelCard: {
     padding: 15,
