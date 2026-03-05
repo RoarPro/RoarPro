@@ -74,19 +74,25 @@ export default function PondsScreen() {
     const hasFish = (item.current_quantity || 0) > 0;
 
     const goToDetail = () => {
-      router.push(`/(owner)/farms/${farmId}/ponds/${item.id}` as any);
+      router.push({
+        pathname: "/(owner)/farms/[id]/ponds/[pondId]",
+        params: { id: farmId, pondId: item.id },
+      });
     };
 
     const goToAction = (subPath: string) => {
-      router.push(
-        `/(owner)/farms/${farmId}/ponds/${item.id}/${subPath}` as any,
-      );
+      router.push({
+        pathname: `/(owner)/farms/${farmId}/ponds/${item.id}/${subPath}` as any,
+        params: { id: farmId, pondId: item.id },
+      });
     };
 
     const goToStocking = () => {
       router.push({
         pathname: `/(owner)/farms/${farmId}/ponds/${item.id}/stocking` as any,
         params: {
+          id: farmId,
+          pondId: item.id,
           pondName: item.name,
           pondArea: item.area_m2 || 0,
         },
@@ -96,7 +102,7 @@ export default function PondsScreen() {
     const goToEdit = () => {
       router.push({
         pathname: `/(owner)/farms/${farmId}/ponds/create` as any,
-        params: { pondId: item.id, isEditing: "true" },
+        params: { id: farmId, pondId: item.id, isEditing: "true" },
       });
     };
 

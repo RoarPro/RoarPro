@@ -30,32 +30,65 @@ export default function SamplingScreen() {
     setLoading(true);
 
     try {
-      // 1. Guardar en el HISTORIAL
+      // --- 1. CÁLCULO DE ALIMENTO CONSUMIDO DESDE EL ÚLTIMO MUESTREO ---
+
+      // Buscamos la fecha del último muestreo en tu tabla sampling_records
+      const { data: lastSampling } = await supabase
+        .from("sampling_records")
+        .select("created_at")
+        .eq("pond_id", pondId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .single();
+
+      // Si no hay muestreo previo (primer muestreo del lote), usamos una fecha antigua
+      const lastDate = lastSampling?.created_at || "1970-01-01T00:00:00Z";
+
+      // Sumamos el alimento consumido en feeding_records desde esa fecha hasta HOY
+      const { data: feedingData, error: feedError } = await supabase
+        .from("feeding_records")
+        .select("amount_kg")
+        .eq("pond_id", pondId)
+        .gt("created_at", lastDate);
+
+      if (feedError) throw feedError;
+
+      // Calculamos el total acumulado de Kg
+      const totalFeedConsumed =
+        feedingData?.reduce(
+          (acc, curr) => acc + (Number(curr.amount_kg) || 0),
+          0,
+        ) || 0;
+
+      // --- 2. GUARDAR EN EL HISTORIAL (sampling_records) ---
       const { error: historyError } = await supabase
-        .from("sampling_records") // Tu tabla de logs
+        .from("sampling_records")
         .insert({
           farm_id: farmId,
           pond_id: pondId,
-          average_weight_g: weightNum, // Nombre exacto de tu SQL
+          average_weight_g: weightNum,
           notes: notes.trim(),
+          // Asegúrate de haber ejecutado el ALTER TABLE para esta columna:
+          feed_consumed_since_last_sampling: totalFeedConsumed,
         });
 
       if (historyError) throw historyError;
 
-      // 2. Actualizar el ESTADO ACTUAL del lote
+      // --- 3. ACTUALIZAR EL ESTADO ACTUAL DEL LOTE (fish_batches) ---
       const { error: batchUpdateError } = await supabase
-        .from("fish_batches") // Tu tabla maestra
+        .from("fish_batches")
         .update({
-          average_weight_g: weightNum, // Actualizamos el peso actual
+          average_weight_g: weightNum, // Actualizamos el peso actual para cálculos de biomasa
         })
         .eq("pond_id", pondId)
         .eq("status", "active");
 
       if (batchUpdateError) throw batchUpdateError;
 
+      // --- 4. ÉXITO ---
       Alert.alert(
         "¡Éxito!",
-        "Pesaje registrado y lote actualizado correctamente.",
+        `Muestreo guardado.\nAlimento consumido en este periodo: ${totalFeedConsumed.toFixed(2)} Kg.`,
       );
       router.back();
     } catch (error: any) {
@@ -119,7 +152,7 @@ export default function SamplingScreen() {
             />
             <Text style={styles.infoText}>
               Este dato actualizará automáticamente el cálculo de biomasa y
-              crecimiento.
+              crecimiento en el panel del Owner.
             </Text>
           </View>
 
@@ -138,7 +171,7 @@ export default function SamplingScreen() {
                   color="white"
                   style={{ marginRight: 8 }}
                 />
-                <Text style={styles.buttonText}>Guardar Muestreo</Text>
+                <Text style={styles.buttonText}>Confirmar Muestreo</Text>
               </>
             )}
           </TouchableOpacity>
@@ -163,6 +196,9 @@ const styles = StyleSheet.create({
     backgroundColor: "white",
     borderRadius: 12,
     elevation: 2,
+    shadowColor: "#000",
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
   },
   headerTitle: { fontSize: 20, fontWeight: "bold", color: "#003366" },
   card: {

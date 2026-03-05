@@ -1,94 +1,146 @@
-import { supabase } from "@/lib/supabase"; // Importante para verificar sesión
+import { supabase } from "@/lib/supabase";
+import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
+import { StatusBar } from "expo-status-bar";
 import { useEffect, useRef } from "react";
-import { Animated, StyleSheet, View } from "react-native";
+import { Animated, StyleSheet, Text, View } from "react-native";
 
 export default function SplashScreen() {
   const router = useRouter();
-
   const fadeAnim = useRef(new Animated.Value(0)).current;
-  const scaleAnim = useRef(new Animated.Value(0.8)).current;
+  const scaleAnim = useRef(new Animated.Value(0.85)).current;
+  const slideUp = useRef(new Animated.Value(20)).current;
 
   useEffect(() => {
-    // 1. Iniciar Animaciones
+    // 1. Iniciamos la "Fina Coquetería" visual
     Animated.parallel([
       Animated.timing(fadeAnim, {
         toValue: 1,
-        duration: 1200,
+        duration: 1000,
         useNativeDriver: true,
       }),
       Animated.spring(scaleAnim, {
         toValue: 1,
-        friction: 6,
+        friction: 8,
+        useNativeDriver: true,
+      }),
+      Animated.timing(slideUp, {
+        toValue: 0,
+        duration: 800,
         useNativeDriver: true,
       }),
     ]).start();
 
-    // 2. Lógica de Redirección Inteligente
-    const checkSessionAndRedirect = async () => {
-      // Esperamos un poco para que la animación se vea (mínimo 2 segundos)
-      await new Promise(resolve => setTimeout(resolve, 2000));
+    // 2. Lógica de Redirección sincronizada
+    const checkSession = async () => {
+      // Esperamos 3 segundos para que disfruten tu diseño
+      await new Promise((resolve) => setTimeout(resolve, 3000));
 
-      const { data: { session } } = await supabase.auth.getSession();
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
 
       if (session) {
-        // Si hay sesión, vamos directo al panel de control
         router.replace("/(owner)");
       } else {
-        // Si no hay sesión, vamos al login
         router.replace("/(auth)/login");
       }
     };
 
-    checkSessionAndRedirect();
-  }, [fadeAnim, scaleAnim, router]); // Añade [] para que solo se ejecute al montar
+    checkSession();
+  }, []);
 
   return (
     <View style={styles.container}>
-      <Animated.Image
-        source={require("../assets/images/splash-icon.jpeg")}
-        style={[
-          styles.logo,
-          {
-            opacity: fadeAnim,
-            transform: [{ scale: scaleAnim }],
-          },
-        ]}
-        resizeMode="contain"
+      <StatusBar style="light" />
+      <LinearGradient
+        colors={["#0A3D62", "#051F32", "#000000"]}
+        style={StyleSheet.absoluteFill}
       />
 
-      <Animated.Text style={[styles.title, { opacity: fadeAnim }]}>
-        AquaViva Manager
-      </Animated.Text>
+      <View style={styles.content}>
+        <Animated.View
+          style={[
+            styles.logoContainer,
+            { opacity: fadeAnim, transform: [{ scale: scaleAnim }] },
+          ]}
+        >
+          <Animated.Image
+            source={require("../assets/images/splash-icon.jpeg")}
+            style={styles.logo}
+            resizeMode="cover"
+          />
+        </Animated.View>
 
-      <Animated.Text style={[styles.subtitle, { opacity: fadeAnim }]}>
-        Gestión inteligente de cultivos acuícolas
-      </Animated.Text>
+        <Animated.View
+          style={{
+            opacity: fadeAnim,
+            transform: [{ translateY: slideUp }],
+            alignItems: "center",
+          }}
+        >
+          <Text style={styles.title}>
+            AQUA<Text style={styles.titleLight}>VIVA</Text>
+          </Text>
+          <View style={styles.decorator} />
+          <Text style={styles.subtitle}>MANAGER</Text>
+          <Text style={styles.footerText}>
+            Gestión inteligente de cultivos acuícolas
+          </Text>
+        </Animated.View>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  container: { flex: 1 },
+  content: {
     flex: 1,
-    backgroundColor: "#0A3D62",
     justifyContent: "center",
     alignItems: "center",
+    paddingHorizontal: 40,
+  },
+  logoContainer: {
+    marginBottom: 30,
+    shadowColor: "#00E5FF",
+    shadowOpacity: 0.4,
+    shadowRadius: 20,
+    elevation: 15,
   },
   logo: {
-    width: 220,
-    height: 220,
-    marginBottom: 20,
-    borderRadius: 110, // Si quieres que la imagen se vea circular
+    width: 180,
+    height: 180,
+    borderRadius: 90,
+    borderWidth: 2,
+    borderColor: "rgba(255, 255, 255, 0.2)",
   },
   title: {
-    fontSize: 28,
-    fontWeight: "bold",
+    fontSize: 32,
+    fontWeight: "900",
     color: "#FFFFFF",
+    letterSpacing: 6,
+  },
+  titleLight: { fontWeight: "300", color: "#00E5FF" },
+  decorator: {
+    width: 40,
+    height: 3,
+    backgroundColor: "#00E5FF",
+    marginVertical: 10,
+    borderRadius: 2,
   },
   subtitle: {
     fontSize: 14,
-    color: "#E0F2FF",
-    marginTop: 6,
+    fontWeight: "700",
+    color: "#FFFFFF",
+    letterSpacing: 10,
+    opacity: 0.8,
+  },
+  footerText: {
+    fontSize: 12,
+    color: "#94A3B8",
+    marginTop: 40,
+    textAlign: "center",
+    fontStyle: "italic",
   },
 });

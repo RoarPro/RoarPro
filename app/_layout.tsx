@@ -1,77 +1,65 @@
-import { supabase } from "@/lib/supabase";
-import { Stack, useRouter, useSegments } from "expo-router";
-import { useEffect, useState } from "react";
-import { ActivityIndicator, View } from "react-native";
-// Inicializador de la base de datos local para gestión offline de estanques
 import { initLocalDb } from "@/lib/localDb";
+import { supabase } from "@/lib/supabase";
+import { Stack } from "expo-router";
+import * as SplashScreen from "expo-splash-screen";
+import { StatusBar } from "expo-status-bar";
+import { useCallback, useEffect, useState } from "react";
+import { StyleSheet, View } from "react-native";
 
-export default function AquaVivaLayout() {
-  const router = useRouter();
-  const segments = useSegments();
-  const [isReady, setIsReady] = useState(false);
+// Bloqueamos el ocultado automático para evitar el flash blanco
+SplashScreen.preventAutoHideAsync().catch(() => {});
+
+export default function RootLayout() {
+  const [isAppReady, setIsAppReady] = useState(false);
 
   useEffect(() => {
-    // Inicialización del motor de persistencia local para AquaViva Manager
-    initLocalDb();
-
-    const handleNavigation = (session: any) => {
-      const firstSegment = segments[0] as string;
-      const inAuthGroup = firstSegment === "(auth)";
-
-      if (!session) {
-        // Redirección a acceso si no hay sesión activa
-        if (!inAuthGroup) {
-          router.replace("/(auth)/login");
-        }
-      } else {
-        // Redirección al panel principal del dueño de la finca
-        if (inAuthGroup || firstSegment === "index" || !firstSegment) {
-          router.replace("/(owner)");
-        }
+    async function prepare() {
+      try {
+        // 1. Cargamos lo básico (DB y verificar que Supabase responda)
+        await initLocalDb();
+        await supabase.auth.getSession();
+        // Delay técnico de 500ms para asegurar estabilidad
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      } catch (e) {
+        console.warn("Error en carga inicial:", e);
+      } finally {
+        setIsAppReady(true);
       }
+    }
+    prepare();
+  }, []);
 
-      if (!isReady) {
-        setIsReady(true);
-      }
-    };
+  const onLayoutRootView = useCallback(async () => {
+    if (isAppReady) {
+      // Soltamos el splash nativo solo cuando el View azul ya está renderizado
+      await SplashScreen.hideAsync().catch(() => {});
+    }
+  }, [isAppReady]);
 
-    // Verificación de estado de sesión con Supabase
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      handleNavigation(session);
-    });
-
-    const { data: authListener } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
-        handleNavigation(session);
-      },
-    );
-
-    return () => {
-      authListener.subscription.unsubscribe();
-    };
-  }, [segments, router, isReady]);
-
-  if (!isReady) {
-    return (
-      <View
-        style={{
-          flex: 1,
-          justifyContent: "center",
-          alignItems: "center",
-          backgroundColor: "#F2F5F7", // Color corporativo de fondo
-        }}
-      >
-        <ActivityIndicator size="large" color="#0066CC" />
-      </View>
-    );
+  if (!isAppReady) {
+    return <View style={{ flex: 1, backgroundColor: "#0A3D62" }} />;
   }
 
   return (
-    <Stack screenOptions={{ headerShown: false }}>
-      {/* Definición de la jerarquía de navegación de la App */}
-      <Stack.Screen name="index" />
-      <Stack.Screen name="(auth)" />
-      <Stack.Screen name="(owner)" />
-    </Stack>
+    <View style={styles.root} onLayout={onLayoutRootView}>
+      <StatusBar style="light" />
+      <Stack
+        screenOptions={{
+          headerShown: false,
+          // contentStyle es vital para que no haya parpadeos al navegar
+          contentStyle: { backgroundColor: "#0A3D62" },
+          animation: "fade",
+        }}
+      >
+        {/* El Stack busca automáticamente el index.tsx como primera pantalla */}
+        <Stack.Screen name="index" />
+        <Stack.Screen name="(auth)" />
+        <Stack.Screen name="(owner)" />
+      </Stack>
+    </View>
   );
 }
+
+const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: "#0A3D62" },
+});

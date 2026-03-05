@@ -2,7 +2,7 @@ import { db } from "@/lib/localDb";
 import { supabase } from "@/lib/supabase";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
   FlatList,
@@ -38,6 +38,42 @@ export default function InventoryScreen() {
 
   const PESO_BULTO = 40;
 
+  // --- NUEVA LÓGICA DE AGRUPACIÓN ---
+  // Agrupamos el inventario plano en un objeto estructurado por Bodegas
+  const groupedInventory = useMemo(() => {
+    const groups: { [key: string]: any } = {};
+
+    inventory.forEach((item) => {
+      // Separamos "Bodega - Producto"
+      const parts = item.item_name.split(" - ");
+      const bodega = parts[0]?.trim() || "Sin Bodega";
+      const insumo = parts[1]?.trim() || item.item_name;
+
+      // Si la bodega no existe en nuestro grupo, la creamos
+      if (!groups[bodega]) {
+        groups[bodega] = {
+          bodegaName: bodega,
+          is_satellite: item.is_satellite,
+          items: [],
+        };
+      }
+
+      // Metemos el producto dentro de su bodega
+      groups[bodega].items.push({
+        ...item,
+        insumoName: insumo,
+      });
+    });
+
+    // Convertimos el objeto en un array para el FlatList
+    return Object.values(groups).sort((a, b) => {
+      // Ordenamos: Principales primero, Satélites después
+      if (a.is_satellite === b.is_satellite)
+        return a.bodegaName.localeCompare(b.bodegaName);
+      return a.is_satellite ? 1 : -1;
+    });
+  }, [inventory]);
+
   // Lógica de conversión de peso
   const handleKgChange = (val: string) => {
     const text = val.replace(",", ".");
@@ -68,7 +104,7 @@ export default function InventoryScreen() {
     if (!farmId) return;
     try {
       const localRows = db.getAllSync(
-        `SELECT * FROM local_inventory WHERE farm_id = ? ORDER BY is_satellite ASC, item_name ASC`,
+        `SELECT * FROM local_inventory WHERE farm_id = ? ORDER BY item_name ASC`,
         [String(farmId)],
       );
       setInventory(
@@ -126,7 +162,7 @@ export default function InventoryScreen() {
     syncData();
   }, [loadFromLocal, syncData]);
 
-  // Guardar Item (Crear o Actualizar)
+  // Guardar Item (Crear, Sumar o Actualizar)
   const handleSaveItem = async () => {
     if (!bodegaName.trim() || !insumoName.trim() || !kgQuantity || !farmId) {
       Alert.alert(
@@ -141,9 +177,10 @@ export default function InventoryScreen() {
 
     try {
       let officialId = editingId;
+      let finalStock = stockNum;
+      let isAddition = false;
 
       if (editingId) {
-        // MODO EDICIÓN: Actualizamos en Supabase
         const { error: updateError } = await supabase
           .from("inventory")
           .update({
@@ -156,25 +193,47 @@ export default function InventoryScreen() {
 
         if (updateError) throw updateError;
       } else {
-        // MODO CREACIÓN: Insertamos nuevo en Supabase
-        const { data: newItems, error: insertError } = await supabase
+        const { data: existingItem, error: searchError } = await supabase
           .from("inventory")
-          .insert([
-            {
-              farm_id: farmId,
-              item_name: fullName,
-              stock_actual: stockNum,
-              unit: "kg",
-              is_satellite: isSatellite,
-            },
-          ])
-          .select();
+          .select("id, stock_actual")
+          .eq("farm_id", farmId)
+          .eq("item_name", fullName)
+          .maybeSingle();
 
-        if (insertError) throw insertError;
-        officialId = newItems[0].id; // Tomamos el nuevo ID generado
+        if (searchError) throw searchError;
+
+        if (existingItem) {
+          finalStock = existingItem.stock_actual + stockNum;
+          officialId = existingItem.id;
+          isAddition = true;
+
+          const { error: updateError } = await supabase
+            .from("inventory")
+            .update({
+              stock_actual: finalStock,
+            })
+            .eq("id", officialId);
+
+          if (updateError) throw updateError;
+        } else {
+          const { data: newItems, error: insertError } = await supabase
+            .from("inventory")
+            .insert([
+              {
+                farm_id: farmId,
+                item_name: fullName,
+                stock_actual: stockNum,
+                unit: "kg",
+                is_satellite: isSatellite,
+              },
+            ])
+            .select();
+
+          if (insertError) throw insertError;
+          officialId = newItems[0].id;
+        }
       }
 
-      // GUARDADO LOCAL (Insert or Replace funciona para ambos casos)
       db.runSync(
         `INSERT OR REPLACE INTO local_inventory (id, farm_id, item_name, stock_actual, unit, is_satellite) 
          VALUES (?, ?, ?, ?, ?, ?)`,
@@ -182,7 +241,7 @@ export default function InventoryScreen() {
           officialId,
           String(farmId),
           fullName,
-          stockNum,
+          finalStock,
           "kg",
           isSatellite ? 1 : 0,
         ],
@@ -192,17 +251,22 @@ export default function InventoryScreen() {
       setModalVisible(false);
       resetForm();
 
-      Alert.alert(
-        "¡Éxito!",
-        editingId ? "Insumo actualizado." : "Insumo guardado correctamente.",
-      );
+      if (editingId) {
+        Alert.alert("¡Éxito!", "Insumo editado correctamente.");
+      } else if (isAddition) {
+        Alert.alert(
+          "¡Stock Actualizado!",
+          `Se sumaron los kilos a: ${fullName}`,
+        );
+      } else {
+        Alert.alert("¡Éxito!", "Nuevo insumo guardado en la bodega.");
+      }
     } catch (err: any) {
       console.error("Error al guardar:", err.message);
       Alert.alert("Error de red", "No se pudo sincronizar con la nube.");
     }
   };
 
-  // Función para Eliminar con doble confirmación y limpieza de fantasmas
   const handleDeleteItem = () => {
     if (!editingId) return;
 
@@ -216,28 +280,24 @@ export default function InventoryScreen() {
           style: "destructive",
           onPress: async () => {
             try {
-              // 1. Intentar borrar de la nube
               const { error: deleteError } = await supabase
                 .from("inventory")
                 .delete()
                 .eq("id", editingId);
 
-              // Si da error de UUID inválido, es un dato viejo de prueba. Lo ignoramos en la nube.
               if (
                 deleteError &&
                 !deleteError.message.includes(
                   "invalid input syntax for type uuid",
                 )
               ) {
-                throw deleteError; // Si es un error real de red, sí lo mostramos
+                throw deleteError;
               }
 
-              // 2. Borrar localmente SIEMPRE (para limpiar tu pantalla)
               db.runSync(`DELETE FROM local_inventory WHERE id = ?`, [
                 editingId,
               ]);
 
-              // 3. Actualizar pantalla
               loadFromLocal();
               setModalVisible(false);
               resetForm();
@@ -265,6 +325,16 @@ export default function InventoryScreen() {
     setIsSatellite(false);
   };
 
+  // Función para abrir el modal al tocar un producto específico
+  const handleEditProduct = (bodega: string, product: any) => {
+    setEditingId(product.id);
+    setBodegaName(bodega);
+    setInsumoName(product.insumoName);
+    handleKgChange(product.stock_actual.toString());
+    setIsSatellite(!!product.is_satellite);
+    setModalVisible(true);
+  };
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -283,23 +353,13 @@ export default function InventoryScreen() {
       </View>
 
       <FlatList
-        data={inventory}
+        data={groupedInventory}
         contentContainerStyle={{ padding: 20, paddingBottom: 100 }}
-        keyExtractor={(item) => item.id}
+        keyExtractor={(item) => item.bodegaName}
         renderItem={({ item }) => (
-          <TouchableOpacity
-            style={styles.card}
-            onPress={() => {
-              setEditingId(item.id);
-              const parts = item.item_name.split(" - ");
-              setBodegaName(parts[0] || "");
-              setInsumoName(parts[1] || "");
-              handleKgChange(item.stock_actual.toString());
-              setIsSatellite(!!item.is_satellite);
-              setModalVisible(true);
-            }}
-          >
-            <View style={styles.cardRow}>
+          <View style={styles.card}>
+            {/* Cabecera de la Bodega */}
+            <View style={styles.bodegaHeader}>
               <View
                 style={[
                   styles.iconBox,
@@ -313,16 +373,37 @@ export default function InventoryScreen() {
                 />
               </View>
               <View style={{ flex: 1, marginLeft: 15 }}>
-                <Text style={styles.itemName}>{item.item_name}</Text>
-                <Text style={styles.stockText}>
-                  {item.stock_actual} kg{" "}
-                  <Text style={{ color: "#94A3B8" }}>
-                    — {(item.stock_actual / PESO_BULTO).toFixed(1)} bultos
-                  </Text>
+                <Text style={styles.bodegaName}>{item.bodegaName}</Text>
+                <Text style={styles.bodegaType}>
+                  {item.is_satellite ? "Bodega Satélite" : "Bodega Principal"}
                 </Text>
               </View>
             </View>
-          </TouchableOpacity>
+
+            {/* Lista de Productos dentro de esta Bodega */}
+            <View style={styles.productsContainer}>
+              {item.items.map((prod: any, index: number) => (
+                <TouchableOpacity
+                  key={prod.id}
+                  style={[
+                    styles.productRow,
+                    index < item.items.length - 1 && styles.productDivider,
+                  ]}
+                  onPress={() => handleEditProduct(item.bodegaName, prod)}
+                >
+                  <Text style={styles.productName}>{prod.insumoName}</Text>
+                  <View style={{ alignItems: "flex-end" }}>
+                    <Text style={styles.productStock}>
+                      {prod.stock_actual} kg
+                    </Text>
+                    <Text style={styles.productBultos}>
+                      {(prod.stock_actual / PESO_BULTO).toFixed(1)} bultos
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
         )}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={syncData} />
@@ -368,13 +449,11 @@ export default function InventoryScreen() {
             behavior={Platform.OS === "ios" ? "padding" : "height"}
             style={styles.modal}
           >
-            {/* CABECERA DEL MODAL CON BOTÓN DE ELIMINAR OCULTO */}
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>
-                {editingId ? "Editar Bodega" : "Nueva Bodega"}
+                {editingId ? "Editar Insumo" : "Nueva Entrada"}
               </Text>
 
-              {/* Botón de papelera solo visible si se está editando */}
               {editingId && (
                 <TouchableOpacity
                   onPress={handleDeleteItem}
@@ -403,7 +482,9 @@ export default function InventoryScreen() {
 
             <View style={styles.row}>
               <View style={{ flex: 1, marginRight: 10 }}>
-                <Text style={styles.label}>Kilos</Text>
+                <Text style={styles.label}>
+                  {editingId ? "Kilos exactos" : "Kilos a sumar"}
+                </Text>
                 <TextInput
                   style={styles.input}
                   keyboardType="numeric"
@@ -466,15 +547,43 @@ const styles = StyleSheet.create({
     backgroundColor: "white",
     borderRadius: 20,
     padding: 15,
-    marginBottom: 12,
+    marginBottom: 16,
     elevation: 2,
   },
-  cardRow: { flexDirection: "row", alignItems: "center" },
+  bodegaHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 15,
+  },
+  bodegaName: { fontSize: 18, fontWeight: "bold", color: "#1E293B" },
+  bodegaType: { fontSize: 13, color: "#64748B", marginTop: 2 },
   iconBox: { padding: 12, borderRadius: 15 },
   mainBg: { backgroundColor: "#DBEAFE" },
   satBg: { backgroundColor: "#D1FAE5" },
-  itemName: { fontSize: 16, fontWeight: "bold", color: "#1E293B" },
-  stockText: { fontSize: 14, color: "#64748B" },
+
+  // Estilos para la lista de productos dentro de la tarjeta
+  productsContainer: {
+    backgroundColor: "#F8FAFC",
+    borderRadius: 12,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+  productRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 10,
+    paddingHorizontal: 5,
+  },
+  productDivider: {
+    borderBottomWidth: 1,
+    borderBottomColor: "#E2E8F0",
+  },
+  productName: { fontSize: 15, fontWeight: "600", color: "#334155", flex: 1 },
+  productStock: { fontSize: 15, fontWeight: "bold", color: "#0F172A" },
+  productBultos: { fontSize: 12, color: "#94A3B8" },
+
   bottomActions: {
     position: "absolute",
     bottom: 30,

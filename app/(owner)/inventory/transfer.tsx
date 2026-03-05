@@ -3,7 +3,7 @@ import { supabase } from "@/lib/supabase";
 import { Ionicons } from "@expo/vector-icons";
 import { Picker } from "@react-native-picker/picker";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -26,7 +26,8 @@ export default function TransferScreen() {
   const [inventory, setInventory] = useState<any[]>([]);
 
   const [sourceId, setSourceId] = useState("");
-  const [destId, setDestId] = useState("");
+  // Ahora el destino es solo el nombre de la bodega, no un producto específico
+  const [destBodegaName, setDestBodegaName] = useState("");
 
   const [kgAmount, setKgAmount] = useState("");
   const [bultosAmount, setBultosAmount] = useState("");
@@ -82,58 +83,138 @@ export default function TransferScreen() {
     fetchData();
   }, [fetchData]);
 
+  // Extraemos las bodegas destino disponibles (solo nombres únicos)
+  const destBodegas = useMemo(() => {
+    const bodegas = new Set<string>();
+    inventory.forEach((item) => {
+      const parts = item.item_name.split(" - ");
+      const bodega = parts[0]?.trim() || "Sin Bodega";
+      bodegas.add(bodega);
+    });
+    return Array.from(bodegas).sort();
+  }, [inventory]);
+
   const handleTransfer = async () => {
     const qty = parseFloat(kgAmount);
-    const source = inventory.find((i) => i.id === sourceId);
-    const dest = inventory.find((i) => i.id === destId);
+    const sourceItem = inventory.find((i) => i.id === sourceId);
 
-    if (!source || !dest || isNaN(qty) || qty <= 0) {
-      return Alert.alert("Validación", "Ingresa una cantidad válida.");
+    if (!sourceItem || !destBodegaName || isNaN(qty) || qty <= 0) {
+      return Alert.alert(
+        "Validación",
+        "Completa todos los campos con valores válidos.",
+      );
     }
-    if (sourceId === destId) {
-      return Alert.alert("Error", "Origen y destino deben ser diferentes.");
+
+    const sourceParts = sourceItem.item_name.split(" - ");
+    const sourceBodegaName = sourceParts[0]?.trim();
+    const insumoName = sourceParts[1]?.trim() || sourceItem.item_name;
+
+    if (sourceBodegaName === destBodegaName) {
+      return Alert.alert(
+        "Error",
+        "No puedes transferir a la misma bodega de origen.",
+      );
     }
-    if (qty > source.stock_actual) {
+
+    if (qty > sourceItem.stock_actual) {
       return Alert.alert(
         "Stock insuficiente",
-        `Solo hay ${source.stock_actual}kg disponibles.`,
+        `Solo hay ${sourceItem.stock_actual}kg disponibles en ${sourceItem.item_name}.`,
       );
     }
 
     try {
       setSending(true);
 
+      // 1. Deducir la cantidad del origen (Nube)
+      const newSourceStock = sourceItem.stock_actual - qty;
+      const { error: sourceError } = await supabase
+        .from("inventory")
+        .update({ stock_actual: newSourceStock })
+        .eq("id", sourceId);
+
+      if (sourceError) throw sourceError;
+
+      // 2. Buscar si el producto ya existe en la bodega destino
+      const targetItemName = `${destBodegaName} - ${insumoName}`;
+      const { data: existingDestItem, error: destSearchError } = await supabase
+        .from("inventory")
+        .select("id, stock_actual")
+        .eq("farm_id", farmId)
+        .eq("item_name", targetItemName)
+        .maybeSingle();
+
+      if (destSearchError) throw destSearchError;
+
+      let finalDestId = "";
+      let finalDestStock = qty;
+
+      if (existingDestItem) {
+        // Si existe, le sumamos el saldo (Nube)
+        finalDestStock = existingDestItem.stock_actual + qty;
+        finalDestId = existingDestItem.id;
+
+        const { error: updateDestError } = await supabase
+          .from("inventory")
+          .update({ stock_actual: finalDestStock })
+          .eq("id", finalDestId);
+
+        if (updateDestError) throw updateDestError;
+      } else {
+        // Si NO existe, creamos el producto en la bodega destino (Nube)
+        // Por defecto asumimos que el destino es satélite si no es la principal, pero para estar seguros
+        // lo ideal sería que el usuario lo definiera. Por ahora lo dejamos como satélite = true si se llama diferente.
+        const { data: newDestItem, error: insertDestError } = await supabase
+          .from("inventory")
+          .insert([
+            {
+              farm_id: farmId,
+              item_name: targetItemName,
+              stock_actual: qty,
+              unit: "kg",
+              is_satellite: true,
+            },
+          ])
+          .select();
+
+        if (insertDestError) throw insertDestError;
+        finalDestId = newDestItem[0].id;
+      }
+
+      // 3. Actualizar base de datos Local
       db.withTransactionSync(() => {
+        // Actualizamos Origen
+        db.runSync("UPDATE local_inventory SET stock_actual = ? WHERE id = ?", [
+          newSourceStock,
+          sourceId,
+        ]);
+
+        // Actualizamos/Insertamos Destino
         db.runSync(
-          "UPDATE local_inventory SET stock_actual = stock_actual - ? WHERE id = ?",
-          [qty, sourceId],
-        );
-        db.runSync(
-          "UPDATE local_inventory SET stock_actual = stock_actual + ? WHERE id = ?",
-          [qty, destId],
+          `INSERT OR REPLACE INTO local_inventory (id, farm_id, item_name, stock_actual, unit, is_satellite) 
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [
+            finalDestId,
+            String(farmId),
+            targetItemName,
+            finalDestStock,
+            "kg",
+            1,
+          ],
         );
       });
 
-      Alert.alert("¡Éxito!", "Traslado registrado correctamente.");
+      Alert.alert(
+        "¡Éxito!",
+        `Traslado de ${qty}kg de ${insumoName} a ${destBodegaName} completado.`,
+      );
       router.back();
-
-      const updateCloud = async () => {
-        try {
-          await supabase
-            .from("inventory")
-            .update({ stock_actual: source.stock_actual - qty })
-            .eq("id", sourceId);
-          await supabase
-            .from("inventory")
-            .update({ stock_actual: dest.stock_actual + qty })
-            .eq("id", destId);
-        } catch {
-          console.log("Sincronización de nube pendiente...");
-        }
-      };
-      updateCloud();
-    } catch {
-      Alert.alert("Error", "Falló el traslado local.");
+    } catch (error: any) {
+      console.error("Error en traslado:", error);
+      Alert.alert(
+        "Error de Red",
+        "No se pudo sincronizar el traslado con la nube.",
+      );
     } finally {
       setSending(false);
     }
@@ -145,9 +226,6 @@ export default function TransferScreen() {
         <ActivityIndicator size="large" color="#003366" />
       </View>
     );
-
-  const globalItems = inventory.filter((i) => !i.is_satellite);
-  const satelliteItems = inventory.filter((i) => i.is_satellite);
 
   return (
     <KeyboardAvoidingView
@@ -167,15 +245,15 @@ export default function TransferScreen() {
         </View>
 
         <View style={styles.form}>
-          <Text style={styles.label}>Desde (Bodega Principal)</Text>
+          <Text style={styles.label}>Producto a Mover (Origen)</Text>
           <View style={styles.pickerWrapper}>
             <Picker selectedValue={sourceId} onValueChange={setSourceId}>
               <Picker.Item
-                label="Seleccionar Origen..."
+                label="Selecciona de dónde sacar..."
                 value=""
                 color="#94A3B8"
               />
-              {globalItems.map((item) => (
+              {inventory.map((item) => (
                 <Picker.Item
                   key={item.id}
                   label={`${item.item_name} (Saldo: ${item.stock_actual}kg)`}
@@ -185,19 +263,22 @@ export default function TransferScreen() {
             </Picker>
           </View>
 
-          <Text style={styles.label}>Hacia (Bodega Satélite)</Text>
+          <Text style={styles.label}>Bodega Destino</Text>
           <View style={styles.pickerWrapper}>
-            <Picker selectedValue={destId} onValueChange={setDestId}>
+            <Picker
+              selectedValue={destBodegaName}
+              onValueChange={setDestBodegaName}
+            >
               <Picker.Item
-                label="Seleccionar Destino..."
+                label="Selecciona a qué bodega enviar..."
                 value=""
                 color="#94A3B8"
               />
-              {satelliteItems.map((item) => (
+              {destBodegas.map((bodegaName) => (
                 <Picker.Item
-                  key={item.id}
-                  label={`${item.item_name} (Stock: ${item.stock_actual}kg)`}
-                  value={item.id}
+                  key={bodegaName}
+                  label={bodegaName}
+                  value={bodegaName}
                 />
               ))}
             </Picker>
@@ -229,11 +310,11 @@ export default function TransferScreen() {
           <TouchableOpacity
             style={[
               styles.btn,
-              (sending || !sourceId || !destId || !kgAmount) &&
+              (sending || !sourceId || !destBodegaName || !kgAmount) &&
                 styles.btnDisabled,
             ]}
             onPress={handleTransfer}
-            disabled={sending || !sourceId || !destId || !kgAmount}
+            disabled={sending || !sourceId || !destBodegaName || !kgAmount}
           >
             {sending ? (
               <ActivityIndicator color="#fff" />
