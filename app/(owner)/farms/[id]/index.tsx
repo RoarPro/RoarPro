@@ -28,6 +28,12 @@ export default function FarmDashboard() {
     activeAlerts: 0,
     dailyConsumption: 0,
     autonomyDays: 0,
+    bodegaAllocations: [] as {
+      inventoryId: string;
+      name: string;
+      dailyAvg: number;
+      weeklyNeed: number;
+    }[],
   });
 
   const getTechnicalRate = (weightGr: number) => {
@@ -74,6 +80,7 @@ export default function FarmDashboard() {
       let totalBiomassCalc = 0;
       let theoreticalConsumption = 0;
       const activePondIds: string[] = [];
+      const pondInventoryMap: Record<string, string | null> = {};
 
       batches?.forEach((batch) => {
         if (batch.pond_id) activePondIds.push(batch.pond_id);
@@ -84,20 +91,50 @@ export default function FarmDashboard() {
         theoreticalConsumption += biomass * getTechnicalRate(weight);
       });
 
-      let realDailyConsumption = 0;
+      // Ponds -> inventory_id map
       if (activePondIds.length > 0) {
-        const sevenDaysAgo = new Date();
-        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-        const { data: recentFeedings } = await supabase
-          .from("feeding_logs")
-          .select("amount_kg")
-          .in("pond_id", activePondIds)
-          .gte("created_at", sevenDaysAgo.toISOString());
+        const { data: pondInventory } = await supabase
+          .from("ponds")
+          .select("id, inventory_id")
+          .in("id", activePondIds);
+        pondInventory?.forEach((p) => {
+          pondInventoryMap[p.id] = p.inventory_id;
+        });
+      }
 
-        const totalFedLast7Days =
-          recentFeedings?.reduce((sum, log) => sum + (log.amount_kg || 0), 0) ||
-          0;
-        realDailyConsumption = totalFedLast7Days / 7;
+      let realDailyConsumption = 0;
+      const perBodegaTotals: Record<string, number> = {};
+      let daysWithData = 0;
+
+      if (activePondIds.length > 0) {
+        const tenDaysAgo = new Date();
+        tenDaysAgo.setDate(tenDaysAgo.getDate() - 10);
+        const { data: recentFeedings } = await supabase
+          .from("ponds_daily")
+          .select("feed_kg, date, pond_id")
+          .eq("farm_id", id)
+          .gte("date", tenDaysAgo.toISOString().slice(0, 10));
+
+        if (recentFeedings && recentFeedings.length > 0) {
+          // Agrupar por fecha (suma de la finca por día)
+          const byDate: Record<string, number> = {};
+          recentFeedings.forEach((row) => {
+            const day = row.date;
+            const feed = Number(row.feed_kg) || 0;
+            byDate[day] = (byDate[day] || 0) + feed;
+
+            // Acumular por bodega según inventory_id del estanque
+            const invId = pondInventoryMap[row.pond_id] || "sin_bodega";
+            perBodegaTotals[invId] = (perBodegaTotals[invId] || 0) + feed;
+          });
+
+          const totals = Object.values(byDate);
+          daysWithData = totals.length;
+          if (daysWithData >= 3) {
+            const farmTotal = totals.reduce((s, v) => s + v, 0);
+            realDailyConsumption = farmTotal / daysWithData;
+          }
+        }
       }
 
       const consumptionToUse =
@@ -120,12 +157,42 @@ export default function FarmDashboard() {
         .eq("farm_id", id)
         .eq("resolved", false);
 
+      // Cargar nombres de bodegas para el desglose
+      let bodegaAllocations: {
+        inventoryId: string;
+        name: string;
+        dailyAvg: number;
+        weeklyNeed: number;
+      }[] = [];
+      if (Object.keys(perBodegaTotals).length > 0) {
+        const { data: invNames } = await supabase
+          .from("inventory")
+          .select("id, item_name")
+          .eq("farm_id", id);
+        const nameMap: Record<string, string> = {};
+        invNames?.forEach((i) => (nameMap[i.id] = i.item_name));
+
+        const divisor = daysWithData > 0 ? daysWithData : 1;
+        bodegaAllocations = Object.entries(perBodegaTotals).map(
+          ([invId, total]) => {
+            const dailyAvg = total / divisor;
+            return {
+              inventoryId: invId,
+              name: nameMap[invId] || "Bodega sin nombre",
+              dailyAvg: Number(dailyAvg.toFixed(2)),
+              weeklyNeed: Number((dailyAvg * 7).toFixed(1)),
+            };
+          },
+        );
+      }
+
       setStats({
         totalBiomass: Number(totalBiomassCalc.toFixed(1)),
         totalFood: Number(totalFoodCalc.toFixed(1)),
         activeAlerts: alertsCount || 0,
         dailyConsumption: Number(consumptionToUse.toFixed(1)),
         autonomyDays: autonomyDaysCalc,
+        bodegaAllocations,
       });
     } catch (error) {
       console.log("Error cargando dashboard:", error);
@@ -302,6 +369,28 @@ export default function FarmDashboard() {
           </View>
         )}
 
+        {stats.bodegaAllocations.length > 0 && (
+          <View style={styles.bodegaCard}>
+            <View style={styles.bodegaHeader}>
+              <Ionicons name="cube-outline" size={18} color="#0F172A" />
+              <Text style={styles.bodegaTitle}>Sugerencia por bodega</Text>
+            </View>
+            {stats.bodegaAllocations.map((bodega) => (
+              <View key={bodega.inventoryId} style={styles.bodegaRow}>
+                <View>
+                  <Text style={styles.bodegaName}>{bodega.name}</Text>
+                  <Text style={styles.bodegaSub}>
+                    Promedio diario: {bodega.dailyAvg} kg/día
+                  </Text>
+                </View>
+                <Text style={styles.bodegaBadge}>
+                  Sugerir 7 días: {bodega.weeklyNeed} kg
+                </Text>
+              </View>
+            ))}
+          </View>
+        )}
+
         {/* 3. MENÚ DE CONTROL (Filtrado por Rol) */}
         <Text style={styles.sectionTitle}>Gestión</Text>
         <View style={styles.menuGrid}>
@@ -471,6 +560,41 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   autonomyDetailText: { fontSize: 11, color: "#475569" },
+  bodegaCard: {
+    backgroundColor: "white",
+    borderRadius: 14,
+    padding: 14,
+    marginTop: 12,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+  bodegaHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 8,
+    gap: 8,
+  },
+  bodegaTitle: { fontWeight: "700", color: "#0F172A" },
+  bodegaRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: "#EDF2F7",
+  },
+  bodegaName: { fontSize: 13, fontWeight: "600", color: "#0F172A" },
+  bodegaSub: { fontSize: 12, color: "#475569" },
+  bodegaBadge: {
+    backgroundColor: "#E0F2FE",
+    color: "#0369A1",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
+    fontSize: 12,
+    fontWeight: "700",
+  },
 
   menuGrid: {
     flexDirection: "row",

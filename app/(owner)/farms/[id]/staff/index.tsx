@@ -14,17 +14,17 @@ import {
 } from "react-native";
 
 // Interfaz para mayor claridad
-interface Employee {
-  id: string;
-  full_name: string;
-  role: "operario" | "admin" | "socio";
+interface Member {
+  user_id: string;
+  full_name?: string;
+  role: "operario" | "administrador" | "socio";
   farm_id: string;
 }
 
 export default function FarmStaffScreen() {
   const { id: farmId } = useLocalSearchParams();
   const router = useRouter();
-  const [staff, setStaff] = useState<Employee[]>([]);
+  const [staff, setStaff] = useState<Member[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -34,8 +34,8 @@ export default function FarmStaffScreen() {
     try {
       setLoading(true);
       const { data: employees, error: staffError } = await supabase
-        .from("employees")
-        .select("*")
+        .from("farm_members")
+        .select("user_id, role, farm_id, full_name")
         .eq("farm_id", farmId) // Filtramos por la finca actual
         .order("full_name", { ascending: true });
 
@@ -62,12 +62,13 @@ export default function FarmStaffScreen() {
     fetchStaff();
   };
 
-  const handleUpdateRole = async (employeeId: string, newRole: string) => {
+  const handleUpdateRole = async (userId: string, newRole: string) => {
     try {
       const { error } = await supabase
-        .from("employees")
+        .from("farm_members")
         .update({ role: newRole })
-        .eq("id", employeeId);
+        .eq("user_id", userId)
+        .eq("farm_id", farmId);
 
       if (error) throw error;
 
@@ -78,29 +79,29 @@ export default function FarmStaffScreen() {
     }
   };
 
-  const handleEditRole = (employee: Employee) => {
+  const handleEditRole = (employee: Member) => {
     Alert.alert(
       "Modificar Permisos",
       `Define el nivel de acceso para ${employee.full_name}`,
       [
         {
           text: "Operario",
-          onPress: () => handleUpdateRole(employee.id, "operario"),
+          onPress: () => handleUpdateRole(employee.user_id, "operario"),
         },
         {
           text: "Administrador",
-          onPress: () => handleUpdateRole(employee.id, "admin"),
+          onPress: () => handleUpdateRole(employee.user_id, "administrador"),
         },
         {
           text: "Socio",
-          onPress: () => handleUpdateRole(employee.id, "socio"),
+          onPress: () => handleUpdateRole(employee.user_id, "socio"),
         },
         { text: "Cancelar", style: "cancel" },
       ],
     );
   };
 
-  const handleDeleteStaff = (employee: Employee) => {
+  const handleDeleteStaff = (employee: Member) => {
     Alert.alert(
       "Revocar Acceso",
       `¿Estás seguro de quitar a ${employee.full_name}? Ya no podrá registrar datos en esta finca.`,
@@ -111,9 +112,10 @@ export default function FarmStaffScreen() {
           style: "destructive",
           onPress: async () => {
             const { error } = await supabase
-              .from("employees")
+              .from("farm_members")
               .delete()
-              .eq("id", employee.id);
+              .eq("user_id", employee.user_id)
+              .eq("farm_id", farmId);
             if (!error) fetchStaff();
             else Alert.alert("Error", "No se pudo eliminar al integrante.");
           },
@@ -124,7 +126,7 @@ export default function FarmStaffScreen() {
 
   const getRoleStyle = (role: string) => {
     switch (role?.toLowerCase()) {
-      case "admin":
+      case "administrador":
         return { bg: "#EBF8FF", text: "#2B6CB0", label: "Administrador" };
       case "socio":
         return { bg: "#F0FFF4", text: "#2F855A", label: "Socio" };
@@ -154,7 +156,7 @@ export default function FarmStaffScreen() {
       <View style={styles.content}>
         <FlatList
           data={staff}
-          keyExtractor={(item) => item.id}
+          keyExtractor={(item) => item.user_id}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
           }
@@ -175,12 +177,14 @@ export default function FarmStaffScreen() {
               >
                 <View style={styles.avatar}>
                   <Text style={styles.avatarText}>
-                    {item.full_name?.charAt(0)}
+                    {item.full_name?.charAt(0) || "U"}
                   </Text>
                 </View>
 
                 <View style={styles.staffInfo}>
-                  <Text style={styles.staffName}>{item.full_name}</Text>
+                  <Text style={styles.staffName}>
+                    {item.full_name || "Sin nombre"}
+                  </Text>
                   <View
                     style={[styles.roleBadge, { backgroundColor: roleInfo.bg }]}
                   >

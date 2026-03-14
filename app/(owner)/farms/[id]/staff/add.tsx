@@ -19,7 +19,7 @@ export default function AddEmployeeScreen() {
   const { id } = useLocalSearchParams();
 
   const [fullName, setFullName] = useState("");
-  const [phone, setPhone] = useState(""); // <-- NUEVO ESTADO PARA EL TELÉFONO
+  const [phone, setPhone] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [selectedRoleId, setSelectedRoleId] = useState("operario");
@@ -32,14 +32,14 @@ export default function AddEmployeeScreen() {
       desc: "Registros diarios (pH, Alimento, Mortalidad)",
     },
     {
-      id: "admin",
+      id: "administrador",
       title: "Nivel 2: Administrador",
       desc: "Gestión de estanques, lotes e inventario",
     },
     {
       id: "socio",
       title: "Nivel 3: Socio",
-      desc: "Acceso total (Ventas y Reportes económicos)",
+      desc: "Acceso a reportes y analítica",
     },
   ];
 
@@ -51,12 +51,10 @@ export default function AddEmployeeScreen() {
 
     setLoading(true);
     try {
-      // 1. Convertimos el nombre de usuario en un formato aceptado por Supabase
       const virtualEmail = username.includes("@")
         ? username.toLowerCase()
         : `${username.toLowerCase()}@aquaviva.local`;
 
-      // 2. Registrar al empleado en Auth (Supabase iniciará sesión con él automáticamente)
       const { data: authData, error: authError } = await supabase.auth.signUp({
         email: virtualEmail,
         password: password,
@@ -68,25 +66,21 @@ export default function AddEmployeeScreen() {
       if (authError) throw authError;
 
       if (authData.user) {
-        // 3. Insertar en la tabla 'employees' con el número de teléfono
-        const { error: employeeError } = await supabase
-          .from("employees")
+        const { error: memberError } = await supabase
+          .from("farm_members")
           .insert([
             {
-              id: authData.user.id,
-              auth_id: authData.user.id,
+              user_id: authData.user.id,
               farm_id: id,
               full_name: fullName,
               role: selectedRoleId,
-              phone: phone, // <-- GUARDAMOS EL TELÉFONO EN LA BASE DE DATOS
+              phone: phone,
               is_active: true,
             },
           ]);
 
-        if (employeeError) throw employeeError;
+        if (memberError) throw memberError;
 
-        // 🛑 EL PASO CLAVE: Cerramos la sesión del nuevo empleado
-        // para que no robe el acceso del dueño en este dispositivo.
         await supabase.auth.signOut();
 
         Alert.alert(
@@ -96,7 +90,6 @@ export default function AddEmployeeScreen() {
             {
               text: "Entendido",
               onPress: () => {
-                // Compartimos credenciales (Ahora incluye el teléfono registrado)
                 const msg = `*Acceso AquaViva*\n👤 Usuario: ${username}\n🔑 Clave: ${password}\n📱 Celular registrado: ${phone || "Ninguno"}`;
                 Share.share({ message: msg });
                 router.replace("/(auth)/login");
@@ -136,7 +129,6 @@ export default function AddEmployeeScreen() {
           onChangeText={setFullName}
         />
 
-        {/* <-- NUEVO CAMPO DE TELÉFONO --> */}
         <Text style={styles.label}>Número de Celular / WhatsApp</Text>
         <TextInput
           style={styles.input}
@@ -145,7 +137,7 @@ export default function AddEmployeeScreen() {
           value={phone}
           onChangeText={setPhone}
           keyboardType="phone-pad"
-          maxLength={10} // Límite estándar para números en Colombia
+          maxLength={10}
         />
 
         <Text style={styles.label}>Nombre de Usuario</Text>

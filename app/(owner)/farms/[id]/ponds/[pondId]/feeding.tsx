@@ -17,7 +17,6 @@ import {
   View,
 } from "react-native";
 
-// 1. DEFINIMOS LA FORMA DEL PRODUCTO PARA QUE TYPESCRIPT NO SE QUEJE
 interface InventoryItem {
   id: string;
   farm_id: string;
@@ -27,22 +26,24 @@ interface InventoryItem {
   is_satellite: boolean;
 }
 
+const MEAL_INTERVAL_HOURS = 2;
+const MAX_MEALS_PER_DAY = 3;
+
 export default function FeedingScreen() {
   const { id: farmId, pondId } = useLocalSearchParams();
   const router = useRouter();
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-
   const [pondName, setPondName] = useState("Estanque");
   const [bodegaName, setBodegaName] = useState("");
-  // 2. APLICAMOS LA INTERFACE AQUÍ
   const [availableProducts, setAvailableProducts] = useState<InventoryItem[]>(
     [],
   );
-
   const [selectedProductId, setSelectedProductId] = useState("");
   const [amount, setAmount] = useState("");
+  const [mealsToday, setMealsToday] = useState(0);
+  const [nextAvailableAt, setNextAvailableAt] = useState<Date | null>(null);
 
   const loadFeedingData = useCallback(async () => {
     try {
@@ -57,11 +58,10 @@ export default function FeedingScreen() {
       if (pError) throw pError;
       setPondName(pond.name);
 
-      // Cargamos el inventario local
       const localInventory = db.getAllSync(
         "SELECT * FROM local_inventory WHERE farm_id = ?",
         [String(farmId)],
-      ) as InventoryItem[]; // <-- Forzamos el tipo aquí también
+      ) as InventoryItem[];
 
       const baseItem = localInventory.find((i) => i.id === pond.inventory_id);
 
@@ -83,6 +83,28 @@ export default function FeedingScreen() {
 
       if (productsForPicker.length > 0) {
         setSelectedProductId(productsForPicker[0].id);
+      }
+
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
+      const { data: todayMeals } = await supabase
+        .from("feeding_records")
+        .select("created_at")
+        .eq("pond_id", pondId)
+        .gte("created_at", startOfDay.toISOString())
+        .order("created_at", { ascending: false });
+
+      const count = todayMeals?.length || 0;
+      setMealsToday(count);
+
+      if (todayMeals && todayMeals.length > 0) {
+        const last = new Date(todayMeals[0].created_at);
+        const next = new Date(
+          last.getTime() + MEAL_INTERVAL_HOURS * 60 * 60 * 1000,
+        );
+        setNextAvailableAt(count >= MAX_MEALS_PER_DAY ? null : next);
+      } else {
+        setNextAvailableAt(null);
       }
     } catch (error: any) {
       console.error("Error cargando datos:", error.message);
@@ -107,6 +129,20 @@ export default function FeedingScreen() {
       return Alert.alert(
         "Error",
         "Debes seleccionar un producto de la bodega.",
+      );
+    }
+
+    if (mealsToday >= MAX_MEALS_PER_DAY) {
+      return Alert.alert(
+        "Límite diario alcanzado",
+        "Este estanque ya tiene 3 comidas registradas hoy.",
+      );
+    }
+
+    if (nextAvailableAt && new Date() < nextAvailableAt) {
+      return Alert.alert(
+        "Aún no disponible",
+        `Debes esperar hasta ${nextAvailableAt.toLocaleTimeString()} para la siguiente comida.`,
       );
     }
 
@@ -151,6 +187,15 @@ export default function FeedingScreen() {
         selectedProductId,
       ]);
 
+      const updatedMeals = mealsToday + 1;
+      setMealsToday(updatedMeals);
+      if (updatedMeals >= MAX_MEALS_PER_DAY) {
+        setNextAvailableAt(null);
+      } else {
+        const next = new Date(Date.now() + MEAL_INTERVAL_HOURS * 60 * 60 * 1000);
+        setNextAvailableAt(next);
+      }
+
       Alert.alert("¡Éxito!", `Se suministraron ${amountKg}kg a ${pondName}`);
       router.back();
     } catch (error: any) {
@@ -190,6 +235,19 @@ export default function FeedingScreen() {
             style={{ alignSelf: "center", marginBottom: 15 }}
           />
 
+          <View style={styles.mealStatus}>
+            <Text style={styles.mealStatusTitle}>
+              Comidas hoy: {mealsToday}/{MAX_MEALS_PER_DAY}
+            </Text>
+            <Text style={styles.mealStatusSubtitle}>
+              {mealsToday >= MAX_MEALS_PER_DAY
+                ? "Alimentación completa por hoy"
+                : nextAvailableAt
+                  ? `Disponible desde ${nextAvailableAt.toLocaleTimeString()}`
+                  : "Disponible ahora"}
+            </Text>
+          </View>
+
           <View style={styles.infoBox}>
             <Text style={styles.infoLabel}>Bodega Asignada:</Text>
             <Text style={styles.infoValue}>{bodegaName}</Text>
@@ -199,44 +257,48 @@ export default function FeedingScreen() {
           <View style={styles.pickerWrapper}>
             <Picker
               selectedValue={selectedProductId}
-              onValueChange={setSelectedProductId}
+              onValueChange={(itemValue) => setSelectedProductId(itemValue)}
+              style={styles.picker}
             >
-              {availableProducts.length === 0 ? (
-                <Picker.Item label="No hay productos en esta bodega" value="" />
-              ) : (
-                availableProducts.map((item) => {
-                  const insumoName =
-                    item.item_name.split(" - ")[1] || item.item_name;
-                  return (
-                    <Picker.Item
-                      key={item.id}
-                      label={`${insumoName} (Saldo: ${item.stock_actual}kg)`}
-                      value={item.id}
-                    />
-                  );
-                })
-              )}
+              {availableProducts.map((item) => (
+                <Picker.Item
+                  key={item.id}
+                  label={`${item.item_name} (${item.stock_actual} ${item.unit})`}
+                  value={item.id}
+                />
+              ))}
             </Picker>
           </View>
 
-          <Text style={styles.label}>Cantidad Suministrada (Kg)</Text>
+          <Text style={styles.label}>Cantidad (kg)</Text>
           <TextInput
             style={styles.input}
-            keyboardType="numeric"
-            placeholder="Ej: 15.5"
+            placeholder="Ej: 25"
+            keyboardType="decimal-pad"
             value={amount}
             onChangeText={setAmount}
           />
 
           <TouchableOpacity
-            style={[styles.button, saving && { backgroundColor: "#94A3B8" }]}
+            style={[
+              styles.button,
+              (saving || mealsToday >= MAX_MEALS_PER_DAY) && styles.buttonDisabled,
+            ]}
             onPress={handleRecordFeeding}
-            disabled={saving || availableProducts.length === 0}
+            disabled={saving || mealsToday >= MAX_MEALS_PER_DAY}
           >
             {saving ? (
               <ActivityIndicator color="white" />
             ) : (
-              <Text style={styles.buttonText}>Guardar y Descontar</Text>
+              <>
+                <Ionicons
+                  name="save-outline"
+                  size={20}
+                  color="white"
+                  style={{ marginRight: 8 }}
+                />
+                <Text style={styles.buttonText}>Registrar alimentación</Text>
+              </>
             )}
           </TouchableOpacity>
         </View>
@@ -246,81 +308,75 @@ export default function FeedingScreen() {
 }
 
 const styles = StyleSheet.create({
+  scrollContainer: { padding: 20, paddingBottom: 40 },
   loadingCenter: {
     flex: 1,
-    justifyContent: "center",
     alignItems: "center",
-    backgroundColor: "#F2F5F7",
-  },
-  scrollContainer: {
-    flexGrow: 1,
-    padding: 20,
     justifyContent: "center",
+    backgroundColor: "white",
+  },
+  title: {
+    fontSize: 22,
+    fontWeight: "bold",
+    color: "#0F172A",
+    marginBottom: 12,
   },
   card: {
     backgroundColor: "white",
-    padding: 25,
-    borderRadius: 25,
-    elevation: 5,
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: "bold",
-    color: "#003366",
-    textAlign: "center",
-    marginBottom: 20,
-    marginTop: 20,
+    borderRadius: 16,
+    padding: 16,
+    elevation: 3,
   },
   infoBox: {
-    backgroundColor: "#E0F2FE",
-    padding: 15,
+    backgroundColor: "#F8FAFC",
     borderRadius: 12,
-    marginBottom: 20,
-    alignItems: "center",
+    padding: 12,
+    marginBottom: 12,
   },
-  infoLabel: {
-    fontSize: 12,
-    color: "#0284C7",
-    fontWeight: "bold",
-    textTransform: "uppercase",
-  },
-  infoValue: {
-    fontSize: 16,
-    color: "#0369A1",
-    fontWeight: "bold",
-    marginTop: 2,
-  },
+  infoLabel: { fontSize: 12, color: "#475569", marginBottom: 4 },
+  infoValue: { fontSize: 14, fontWeight: "bold", color: "#0F172A" },
   label: {
-    fontSize: 14,
-    color: "#4A5568",
-    marginBottom: 10,
+    fontSize: 13,
     fontWeight: "600",
+    color: "#475569",
+    marginTop: 10,
+    marginBottom: 6,
   },
   pickerWrapper: {
-    backgroundColor: "#F7FAFC",
-    borderRadius: 15,
     borderWidth: 1,
     borderColor: "#E2E8F0",
-    overflow: "hidden",
-    marginBottom: 20,
+    borderRadius: 12,
+    marginBottom: 12,
   },
+  picker: { height: 50 },
   input: {
-    backgroundColor: "#F7FAFC",
-    padding: 18,
-    borderRadius: 15,
     borderWidth: 1,
     borderColor: "#E2E8F0",
-    fontSize: 20,
-    fontWeight: "bold",
-    textAlign: "center",
-    marginBottom: 25,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 16,
     color: "#0F172A",
+    marginBottom: 16,
   },
   button: {
-    backgroundColor: "#0066CC",
-    padding: 18,
-    borderRadius: 15,
+    flexDirection: "row",
     alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#0066CC",
+    padding: 14,
+    borderRadius: 14,
   },
-  buttonText: { color: "white", fontWeight: "bold", fontSize: 18 },
+  buttonDisabled: { opacity: 0.6 },
+  buttonText: { color: "white", fontWeight: "bold", fontSize: 16 },
+  mealStatus: {
+    backgroundColor: "#EFF6FF",
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: "#DBEAFE",
+  },
+  mealStatusTitle: { fontSize: 15, fontWeight: "700", color: "#0F172A" },
+  mealStatusSubtitle: { fontSize: 12, color: "#475569", marginTop: 4 },
 });

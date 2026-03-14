@@ -50,23 +50,24 @@ export default function FarmsScreen() {
         .maybeSingle();
 
       if (profile) {
-  setUserName(profile.name || "Usuario");
-  if (profile.role === "owner") {
-    detectedRole = "owner";
-  } else {
-    // Buscamos en employees para operario, administrador y SOCIO
-    const { data: empData } = await supabase
-      .from("employees")
-      .select("role, farm_id")
-      .eq("id", userId) // Cambié auth_id por id para ser consistente con tus triggers
-      .maybeSingle();
+        setUserName(profile.name || "Usuario");
+        if (profile.role === "owner") {
+          detectedRole = "owner";
+        } else {
+          const { data: member } = await supabase
+            .from("farm_members")
+            .select("role, farm_id")
+            .eq("user_id", userId)
+            .maybeSingle();
 
-    if (empData) {
-      detectedRole = empData.role as UserRole;
-      currentFarmId = empData.farm_id;
-    }
-  }
-}
+          if (member) {
+            const normalized =
+              member.role === "administrador" ? "admin" : member.role;
+            detectedRole = normalized as UserRole;
+            currentFarmId = member.farm_id;
+          }
+        }
+      }
 
       if (!detectedRole) {
         setUserRole(null);

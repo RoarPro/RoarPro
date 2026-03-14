@@ -1,16 +1,102 @@
 import { initLocalDb } from "@/lib/localDb";
 import { supabase } from "@/lib/supabase";
 import { Stack } from "expo-router";
+import * as Notifications from "expo-notifications";
+import Constants from "expo-constants";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useState } from "react";
-import { StyleSheet, View } from "react-native";
+import { Platform, StyleSheet, View } from "react-native";
+
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowBanner: true,
+    shouldShowList: true,
+    shouldPlaySound: false,
+    shouldSetBadge: false,
+  }),
+});
 
 // Bloqueamos el ocultado automático para evitar el flash blanco
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
 export default function RootLayout() {
   const [isAppReady, setIsAppReady] = useState(false);
+  const ensureSamplingNotifications = useCallback(async () => {
+    if (Constants.appOwnership === "expo") {
+      // Expo Go no soporta push remotas; evitamos configurar para no mostrar warning.
+      return;
+    }
+
+    const channelId = "sampling-reminders";
+    if (Platform.OS === "android") {
+      await Notifications.setNotificationChannelAsync(channelId, {
+        name: "Recordatorios de muestreo",
+        importance: Notifications.AndroidImportance.DEFAULT,
+      });
+    }
+
+    const current = await Notifications.getPermissionsAsync();
+    let status = current.status;
+    if (status !== "granted") {
+      const request = await Notifications.requestPermissionsAsync();
+      status = request.status;
+    }
+    if (status !== "granted") return;
+
+    const existing =
+      (await Notifications.getAllScheduledNotificationsAsync()) || [];
+    const hasTag = (tag: string) =>
+      existing.some((n) => n.content.data?.tag === tag);
+
+    const scheduleReminder = async (
+      day: number,
+      hour: number,
+      tag: string,
+      body: string,
+    ) => {
+      if (hasTag(tag)) return;
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: "Recordatorio de muestreo",
+          body,
+          data: { tag },
+        },
+        trigger: {
+          day,
+          hour,
+          minute: 0,
+          repeats: true,
+          channelId,
+        },
+      });
+    };
+
+    await scheduleReminder(
+      15,
+      8,
+      "sampling-15-am",
+      "Hoy toca muestreo programado (día 15).",
+    );
+    await scheduleReminder(
+      15,
+      17,
+      "sampling-15-pm",
+      "¿Ya registraste el muestreo del día 15?",
+    );
+    await scheduleReminder(
+      30,
+      8,
+      "sampling-30-am",
+      "Hoy toca muestreo programado (día 30).",
+    );
+    await scheduleReminder(
+      30,
+      17,
+      "sampling-30-pm",
+      "Recuerda registrar el muestreo del día 30.",
+    );
+  }, []);
 
   useEffect(() => {
     async function prepare() {
@@ -28,6 +114,12 @@ export default function RootLayout() {
     }
     prepare();
   }, []);
+
+  useEffect(() => {
+    if (isAppReady) {
+      ensureSamplingNotifications();
+    }
+  }, [ensureSamplingNotifications, isAppReady]);
 
   const onLayoutRootView = useCallback(async () => {
     if (isAppReady) {
