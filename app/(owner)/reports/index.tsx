@@ -3,7 +3,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Print from "expo-print";
 import { useRouter } from "expo-router";
 import * as Sharing from "expo-sharing";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 // --- SOLUCIÓN PARA EXPO SDK 54: Usamos la API Legacy ---
 import * as FileSystem from "expo-file-system/legacy";
@@ -15,35 +15,98 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
 
 export default function AnalyticsReportsScreen() {
   const router = useRouter();
+
+  const today = useMemo(() => new Date(), []);
+  const defaultEnd = useMemo(() => today.toISOString().slice(0, 10), [today]);
+  const defaultStart = useMemo(() => {
+    const d = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000);
+    return d.toISOString().slice(0, 10);
+  }, [today]);
+
   const [generatingPDF, setGeneratingPDF] = useState(false);
   const [generatingExcel, setGeneratingExcel] = useState(false);
+  const [generatingCSV, setGeneratingCSV] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  // Estados para datos reales
+  const [farmId, setFarmId] = useState<string>("");
+  const [pondId, setPondId] = useState<string>("");
+  const [pondName, setPondName] = useState<string>("");
+  const [startDate, setStartDate] = useState<string>(defaultStart);
+  const [endDate, setEndDate] = useState<string>(defaultEnd);
+  const [availableFarms, setAvailableFarms] = useState<any[]>([]);
+
   const [stats, setStats] = useState({
     avgWeight: 0,
     tasksEfficiency: 0,
     totalStock: 0,
-    recentSamplings: [] as any[],
+    recentDaily: [] as any[],
     chartData: [] as any[],
     inventoryList: [] as any[],
   });
 
+  const loadDefaultFarm = useCallback(async () => {
+    try {
+      const { data: farms } = await supabase
+        .from("farms")
+        .select("id, name, created_at")
+        .order("created_at", { ascending: true })
+        .limit(5);
+
+      if (farms) {
+        setAvailableFarms(farms);
+        if (!farmId && farms.length > 0) {
+          setFarmId(String(farms[0].id));
+        }
+      }
+    } catch (error) {
+      console.error("Error cargando fincas:", error);
+    }
+  }, [farmId]);
+
+  const fetchPondsDaily = useCallback(async () => {
+    if (!farmId) return [];
+
+    let query = supabase
+      .from("ponds_daily")
+      .select(
+        "pond_id, pond_name, farm_id, date, feed_kg, mortality, avg_weight_g, biomass_kg",
+      )
+      .eq("farm_id", farmId);
+
+    if (pondId.trim()) {
+      query = query.eq("pond_id", pondId.trim());
+    }
+    if (pondName.trim()) {
+      query = query.eq("pond_name", pondName.trim());
+    }
+    if (startDate) {
+      query = query.gte("date", startDate);
+    }
+    if (endDate) {
+      query = query.lte("date", endDate);
+    }
+
+    const { data, error } = await query.order("date", { ascending: true });
+    if (error) {
+      throw error;
+    }
+    return data || [];
+  }, [farmId, pondId, startDate, endDate]);
+
   const fetchAnalyticsData = useCallback(async () => {
+    if (!farmId) return;
     try {
       setLoading(true);
 
-      const { data: samplings } = await supabase
-        .from("sampling_records")
-        .select("average_weight_g, created_at, ponds(name)")
-        .order("created_at", { ascending: false })
-        .limit(10);
+      const daily = await fetchPondsDaily();
+      const recentDaily = daily.slice(-10).reverse();
 
       const { data: tasks } = await supabase.from("tasks").select("status");
       const totalTasks = tasks?.length || 0;
@@ -57,22 +120,22 @@ export default function AnalyticsReportsScreen() {
         inv?.reduce((acc, curr) => acc + (Number(curr.stock_actual) || 0), 0) ||
         0;
 
-      const formattedChart = (samplings || [])
+      const formattedChart = (recentDaily || [])
         .slice(0, 6)
         .reverse()
         .map((s) => ({
-          label: new Date(s.created_at).toLocaleDateString("es", {
+          label: new Date(s.date).toLocaleDateString("es", {
             month: "short",
           }),
-          value: s.average_weight_g,
-          max: 500,
+          value: s.avg_weight_g || 0,
+          max: Math.max(s.avg_weight_g || 0, 500),
         }));
 
       setStats({
-        avgWeight: samplings?.[0]?.average_weight_g || 0,
+        avgWeight: recentDaily?.[0]?.avg_weight_g || 0,
         tasksEfficiency: efficiency,
         totalStock: stock,
-        recentSamplings: samplings || [],
+        recentDaily: recentDaily || [],
         inventoryList: inv || [],
         chartData:
           formattedChart.length > 0
@@ -84,13 +147,95 @@ export default function AnalyticsReportsScreen() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [farmId, fetchPondsDaily]);
+
+  useEffect(() => {
+    loadDefaultFarm();
+  }, [loadDefaultFarm]);
 
   useEffect(() => {
     fetchAnalyticsData();
   }, [fetchAnalyticsData]);
 
-  // --- 2. GENERACIÓN DE PDF ---
+  const exportPondsDailyToExcel = async () => {
+    const data = await fetchPondsDaily();
+    if (!data.length) {
+      throw new Error("No hay datos para exportar con los filtros actuales.");
+    }
+
+    const dailySheet = data.map((s) => ({
+      Fecha: new Date(s.date).toLocaleDateString(),
+      Estanque: s.pond_name || s.pond_id,
+      Finca: s.farm_id,
+      "Alimento (kg)": s.feed_kg ?? 0,
+      Mortalidad: s.mortality ?? 0,
+      "Peso Promedio (g)": s.avg_weight_g ?? 0,
+      "Biomasa (kg)": s.biomass_kg ?? 0,
+    }));
+
+    const wb = XLSX.utils.book_new();
+    const ws1 = XLSX.utils.json_to_sheet(dailySheet);
+    XLSX.utils.book_append_sheet(wb, ws1, "Diario");
+
+    const wbout = XLSX.write(wb, { type: "base64", bookType: "xlsx" });
+    const uri = `${FileSystem.cacheDirectory}AquaViva_PondsDaily_${Date.now()}.xlsx`;
+
+    await FileSystem.writeAsStringAsync(uri, wbout, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+
+    await Sharing.shareAsync(uri, {
+      mimeType:
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      dialogTitle: "Enviar Reporte Excel",
+    });
+  };
+
+  const exportPondsDailyToCSV = async () => {
+    const data = await fetchPondsDaily();
+    if (!data.length) {
+      throw new Error("No hay datos para exportar con los filtros actuales.");
+    }
+
+    const header = [
+      "date",
+      "pond_id",
+      "pond_name",
+      "farm_id",
+      "feed_kg",
+      "mortality",
+      "avg_weight_g",
+      "biomass_kg",
+    ];
+
+    const rows = data.map((row) =>
+      [
+        row.date,
+        row.pond_id,
+        row.pond_name,
+        row.farm_id,
+        row.feed_kg ?? 0,
+        row.mortality ?? 0,
+        row.avg_weight_g ?? 0,
+        row.biomass_kg ?? 0,
+      ]
+        .map((value) => `"${String(value ?? "").replace(/"/g, '""')}"`)
+        .join(","),
+    );
+
+    const csvContent = [header.join(","), ...rows].join("\n");
+    const uri = `${FileSystem.cacheDirectory}AquaViva_PondsDaily_${Date.now()}.csv`;
+
+    await FileSystem.writeAsStringAsync(uri, csvContent, {
+      encoding: FileSystem.EncodingType.UTF8,
+    });
+
+    await Sharing.shareAsync(uri, {
+      mimeType: "text/csv",
+      dialogTitle: "Enviar Reporte CSV",
+    });
+  };
+
   const handleDownloadPDF = async () => {
     setGeneratingPDF(true);
     try {
@@ -106,20 +251,22 @@ export default function AnalyticsReportsScreen() {
               <li><strong>Peso Promedio Actual:</strong> ${stats.avgWeight}g</li>
               <li><strong>Inventario Total:</strong> ${stats.totalStock}kg</li>
             </ul>
-            <h3>Historial de Muestreos</h3>
+            <h3>Historial Diario</h3>
             <table style="width: 100%; border-collapse: collapse;">
               <tr style="background: #F1F5F9;">
                 <th style="border: 1px solid #ddd; padding: 8px;">Fecha</th>
                 <th style="border: 1px solid #ddd; padding: 8px;">Estanque</th>
                 <th style="border: 1px solid #ddd; padding: 8px;">Peso (g)</th>
+                <th style="border: 1px solid #ddd; padding: 8px;">Alimento (kg)</th>
               </tr>
-              ${stats.recentSamplings
+              ${stats.recentDaily
                 .map(
                   (s) => `
                 <tr>
-                  <td style="border: 1px solid #ddd; padding: 8px;">${new Date(s.created_at).toLocaleDateString()}</td>
-                  <td style="border: 1px solid #ddd; padding: 8px;">${s.ponds?.name || "N/A"}</td>
-                  <td style="border: 1px solid #ddd; padding: 8px;">${s.average_weight_g}g</td>
+                  <td style="border: 1px solid #ddd; padding: 8px;">${new Date(s.date).toLocaleDateString()}</td>
+                  <td style="border: 1px solid #ddd; padding: 8px;">${s.pond_name || s.pond_id}</td>
+                  <td style="border: 1px solid #ddd; padding: 8px;">${s.avg_weight_g ?? 0}g</td>
+                  <td style="border: 1px solid #ddd; padding: 8px;">${s.feed_kg ?? 0}kg</td>
                 </tr>
               `,
                 )
@@ -137,47 +284,27 @@ export default function AnalyticsReportsScreen() {
     }
   };
 
-  // --- 3. GENERACIÓN DE EXCEL REAL ---
   const handleDownloadExcel = async () => {
     setGeneratingExcel(true);
     try {
-      const samplingsSheet = stats.recentSamplings.map((s) => ({
-        Fecha: new Date(s.created_at).toLocaleDateString(),
-        Estanque: s.ponds?.name || "N/A",
-        "Peso Promedio (g)": s.average_weight_g,
-      }));
-
-      const inventorySheet = stats.inventoryList.map((i) => ({
-        Insumo: i.item_name,
-        Stock: i.stock_actual,
-        Unidad: i.unit,
-      }));
-
-      const wb = XLSX.utils.book_new();
-      const ws1 = XLSX.utils.json_to_sheet(samplingsSheet);
-      const ws2 = XLSX.utils.json_to_sheet(inventorySheet);
-      XLSX.utils.book_append_sheet(wb, ws1, "Muestreos");
-      XLSX.utils.book_append_sheet(wb, ws2, "Inventario");
-
-      const wbout = XLSX.write(wb, { type: "base64", bookType: "xlsx" });
-
-      // Como usamos 'legacy', esto ya funciona perfecto de forma nativa
-      const uri = `${FileSystem.cacheDirectory}AquaViva_Reporte_${Date.now()}.xlsx`;
-
-      await FileSystem.writeAsStringAsync(uri, wbout, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-
-      await Sharing.shareAsync(uri, {
-        mimeType:
-          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        dialogTitle: "Enviar Reporte Excel",
-      });
+      await exportPondsDailyToExcel();
     } catch (error) {
       console.error(error);
       Alert.alert("Error", "No se pudo generar el Excel");
     } finally {
       setGeneratingExcel(false);
+    }
+  };
+
+  const handleDownloadCSV = async () => {
+    setGeneratingCSV(true);
+    try {
+      await exportPondsDailyToCSV();
+    } catch (error) {
+      console.error(error);
+      Alert.alert("Error", "No se pudo generar el CSV");
+    } finally {
+      setGeneratingCSV(false);
     }
   };
 
@@ -205,6 +332,75 @@ export default function AnalyticsReportsScreen() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
       >
+        <View style={styles.filtersCard}>
+          <Text style={styles.sectionLabel}>Filtros de exportación</Text>
+          <Text style={styles.filterLabel}>Finca (farm_id) *</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="UUID de la finca"
+            value={farmId}
+            onChangeText={setFarmId}
+            autoCapitalize="none"
+          />
+          {availableFarms.length > 0 && (
+            <View style={styles.chipRow}>
+              {availableFarms.map((farm) => (
+                <TouchableOpacity
+                  key={farm.id}
+                  style={[
+                    styles.chip,
+                    farmId === String(farm.id) && styles.chipActive,
+                  ]}
+                  onPress={() => setFarmId(String(farm.id))}
+                >
+                  <Text
+                    style={[
+                      styles.chipText,
+                      farmId === String(farm.id) && styles.chipTextActive,
+                    ]}
+                  >
+                    {farm.name || farm.id}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
+
+          <Text style={styles.filterLabel}>Estanque (pond_id)</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="Opcional"
+            value={pondId}
+            onChangeText={setPondId}
+            autoCapitalize="none"
+          />
+
+          <View style={styles.dateRow}>
+            <View style={{ flex: 1, marginRight: 8 }}>
+              <Text style={styles.filterLabel}>Desde (YYYY-MM-DD)</Text>
+              <TextInput
+                style={styles.input}
+                value={startDate}
+                onChangeText={setStartDate}
+                autoCapitalize="none"
+              />
+            </View>
+            <View style={{ flex: 1, marginLeft: 8 }}>
+              <Text style={styles.filterLabel}>Hasta (YYYY-MM-DD)</Text>
+              <TextInput
+                style={styles.input}
+                value={endDate}
+                onChangeText={setEndDate}
+                autoCapitalize="none"
+              />
+            </View>
+          </View>
+          <Text style={styles.helperText}>
+            La consulta usa ponds_daily con farm_id obligatorio, pond_id
+            opcional y rango de fechas, ordenado por fecha ascendente.
+          </Text>
+        </View>
+
         <View style={styles.kpiRow}>
           <View style={styles.kpiBox}>
             <Text style={styles.kpiLabel}>Eficiencia</Text>
@@ -240,7 +436,7 @@ export default function AnalyticsReportsScreen() {
         <TouchableOpacity
           style={styles.exportCard}
           onPress={handleDownloadPDF}
-          disabled={generatingPDF || generatingExcel}
+          disabled={generatingPDF || generatingExcel || generatingCSV}
         >
           <View style={[styles.iconBox, { backgroundColor: "#FEE2E2" }]}>
             <Ionicons name="document-text" size={28} color="#EF4444" />
@@ -248,7 +444,7 @@ export default function AnalyticsReportsScreen() {
           <View style={styles.exportInfo}>
             <Text style={styles.exportTitle}>Informe Ejecutivo (PDF)</Text>
             <Text style={styles.exportSub}>
-              Datos reales de biomasa y eficiencia operativa.
+              Datos diarios consolidados de biomasa y eficiencia operativa.
             </Text>
           </View>
           {generatingPDF ? (
@@ -261,7 +457,7 @@ export default function AnalyticsReportsScreen() {
         <TouchableOpacity
           style={styles.exportCard}
           onPress={handleDownloadExcel}
-          disabled={generatingPDF || generatingExcel}
+          disabled={generatingPDF || generatingExcel || generatingCSV}
         >
           <View style={[styles.iconBox, { backgroundColor: "#DCFCE7" }]}>
             <Ionicons name="grid" size={28} color="#10B981" />
@@ -269,11 +465,32 @@ export default function AnalyticsReportsScreen() {
           <View style={styles.exportInfo}>
             <Text style={styles.exportTitle}>Histórico Operativo (Excel)</Text>
             <Text style={styles.exportSub}>
-              Tabla detallada de inventario y muestreos.
+              Datos diarios por estanque desde ponds_daily.
             </Text>
           </View>
           {generatingExcel ? (
             <ActivityIndicator color="#10B981" />
+          ) : (
+            <Ionicons name="download-outline" size={24} color="#64748B" />
+          )}
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.exportCard}
+          onPress={handleDownloadCSV}
+          disabled={generatingPDF || generatingExcel || generatingCSV}
+        >
+          <View style={[styles.iconBox, { backgroundColor: "#DBEAFE" }]}>
+            <Ionicons name="document-attach" size={28} color="#2563EB" />
+          </View>
+          <View style={styles.exportInfo}>
+            <Text style={styles.exportTitle}>Histórico Operativo (CSV)</Text>
+            <Text style={styles.exportSub}>
+              Mismo filtrado, formato liviano para hojas de cálculo.
+            </Text>
+          </View>
+          {generatingCSV ? (
+            <ActivityIndicator color="#2563EB" />
           ) : (
             <Ionicons name="download-outline" size={24} color="#64748B" />
           )}
@@ -298,6 +515,30 @@ const styles = StyleSheet.create({
   backBtn: { marginRight: 15 },
   title: { fontSize: 22, fontWeight: "bold", color: "#0F172A" },
   scrollContent: { padding: 20 },
+  filtersCard: {
+    backgroundColor: "white",
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 16,
+    elevation: 1,
+  },
+  filterLabel: {
+    fontSize: 12,
+    color: "#475569",
+    fontWeight: "600",
+    marginBottom: 6,
+    marginTop: 6,
+  },
+  input: {
+    backgroundColor: "#F8FAFC",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: "#0F172A",
+  },
+  helperText: { fontSize: 12, color: "#94A3B8", marginTop: 8 },
   sectionLabel: {
     fontSize: 13,
     fontWeight: "800",
@@ -340,6 +581,24 @@ const styles = StyleSheet.create({
     height: 160,
     paddingHorizontal: 10,
   },
+  dateRow: { flexDirection: "row", marginTop: 8 },
+  chipRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    marginBottom: 6,
+  },
+  chip: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginRight: 6,
+    marginTop: 4,
+  },
+  chipActive: { backgroundColor: "#DBEAFE", borderColor: "#2563EB" },
+  chipText: { fontSize: 12, color: "#475569" },
+  chipTextActive: { color: "#1D4ED8", fontWeight: "700" },
   barContainer: { alignItems: "center", width: 40 },
   barBackground: {
     width: 14,

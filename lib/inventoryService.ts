@@ -12,6 +12,16 @@ export const InventoryService = {
     userId: string
   ) {
     try {
+      if (!fromInventoryId || !toInventoryId || !userId) {
+        throw new Error("Datos incompletos para transferir inventario");
+      }
+      if (fromInventoryId === toInventoryId) {
+        throw new Error("El origen y destino no pueden ser la misma bodega");
+      }
+      if (!Number.isFinite(amount) || amount <= 0) {
+        throw new Error("La cantidad a transferir debe ser mayor a 0");
+      }
+
       // 1. Obtener datos actuales de ambas bodegas para calcular nuevos saldos
       const { data: inventories, error: fetchError } = await supabase
         .from("inventory")
@@ -20,8 +30,8 @@ export const InventoryService = {
 
       if (fetchError) throw fetchError;
 
-      const source = inventories.find((i) => i.id === fromInventoryId);
-      const dest = inventories.find((i) => i.id === toInventoryId);
+      const source = inventories?.find((i) => i.id === fromInventoryId);
+      const dest = inventories?.find((i) => i.id === toInventoryId);
 
       if (!source || source.quantity < amount) {
         throw new Error("Stock insuficiente en la bodega de origen");
@@ -59,9 +69,11 @@ export const InventoryService = {
       if (historyError) console.error("Error guardando historial:", historyError);
 
       return { success: true };
-    } catch (error: any) {
-      console.error("Error en transferStock:", error.message);
-      return { success: false, error: error.message };
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error ? error.message : "Error inesperado en transferencia";
+      console.error("Error en transferStock:", message);
+      return { success: false, error: message };
     }
   },
 };

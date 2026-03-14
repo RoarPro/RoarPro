@@ -18,11 +18,31 @@ import {
   View,
 } from "react-native";
 
+type InventoryItem = {
+  id: string;
+  farm_id: string;
+  item_name: string;
+  stock_actual: number;
+  unit: string;
+  is_satellite: boolean | number;
+};
+
+type GroupedInventoryItem = InventoryItem & {
+  insumoName: string;
+};
+
+type InventoryGroup = {
+  bodegaName: string;
+  is_satellite: boolean;
+  items: GroupedInventoryItem[];
+};
+
 export default function InventoryScreen() {
   const router = useRouter();
-  const { id: farmId } = useLocalSearchParams();
+  const { id } = useLocalSearchParams<{ id?: string | string[] }>();
+  const farmId = useMemo(() => (Array.isArray(id) ? id[0] : id), [id]);
 
-  const [inventory, setInventory] = useState<any[]>([]);
+  const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
@@ -37,11 +57,18 @@ export default function InventoryScreen() {
   const [isSatellite, setIsSatellite] = useState(false);
 
   const PESO_BULTO = 40;
+  const parseNumber = (value: string) => Number.parseFloat(value);
+  const isInvalidNumber = (value: string) => {
+    const parsed = parseNumber(value);
+    return Number.isNaN(parsed) || parsed <= 0;
+  };
+  const getErrorMessage = (error: unknown) =>
+    error instanceof Error ? error.message : "Error desconocido";
 
   // --- NUEVA LÓGICA DE AGRUPACIÓN ---
   // Agrupamos el inventario plano en un objeto estructurado por Bodegas
   const groupedInventory = useMemo(() => {
-    const groups: { [key: string]: any } = {};
+    const groups: Record<string, InventoryGroup> = {};
 
     inventory.forEach((item) => {
       // Separamos "Bodega - Producto"
@@ -53,7 +80,7 @@ export default function InventoryScreen() {
       if (!groups[bodega]) {
         groups[bodega] = {
           bodegaName: bodega,
-          is_satellite: item.is_satellite,
+          is_satellite: Boolean(item.is_satellite),
           items: [],
         };
       }
@@ -78,10 +105,10 @@ export default function InventoryScreen() {
   const handleKgChange = (val: string) => {
     const text = val.replace(",", ".");
     setKgQuantity(text);
-    if (text === "" || isNaN(parseFloat(text))) {
+    if (text === "" || Number.isNaN(parseNumber(text))) {
       setBultosQuantity("");
     } else {
-      const bultos = parseFloat(text) / PESO_BULTO;
+      const bultos = parseNumber(text) / PESO_BULTO;
       setBultosQuantity(
         bultos % 1 === 0 ? bultos.toString() : bultos.toFixed(2),
       );
@@ -91,24 +118,28 @@ export default function InventoryScreen() {
   const handleBultosChange = (val: string) => {
     const text = val.replace(",", ".");
     setBultosQuantity(text);
-    if (text === "" || isNaN(parseFloat(text))) {
+    if (text === "" || Number.isNaN(parseNumber(text))) {
       setKgQuantity("");
     } else {
-      const kg = parseFloat(text) * PESO_BULTO;
+      const kg = parseNumber(text) * PESO_BULTO;
       setKgQuantity(kg.toString());
     }
   };
 
   // Carga de datos local (SQLite)
   const loadFromLocal = useCallback(() => {
-    if (!farmId) return;
+    if (!farmId) {
+      setLoading(false);
+      return;
+    }
     try {
       const localRows = db.getAllSync(
         `SELECT * FROM local_inventory WHERE farm_id = ? ORDER BY item_name ASC`,
-        [String(farmId)],
+        [farmId],
       );
+      const normalizedRows = localRows as InventoryItem[];
       setInventory(
-        localRows.map((item: any) => ({
+        normalizedRows.map((item) => ({
           ...item,
           is_satellite: Boolean(item.is_satellite),
         })),
@@ -171,9 +202,13 @@ export default function InventoryScreen() {
       );
       return;
     }
+    if (isInvalidNumber(kgQuantity)) {
+      Alert.alert("Cantidad inválida", "Ingresa una cantidad mayor que 0.");
+      return;
+    }
 
     const fullName = `${bodegaName.trim()} - ${insumoName.trim()}`;
-    const stockNum = parseFloat(kgQuantity);
+    const stockNum = parseNumber(kgQuantity);
 
     try {
       let officialId = editingId;
@@ -239,7 +274,7 @@ export default function InventoryScreen() {
          VALUES (?, ?, ?, ?, ?, ?)`,
         [
           officialId,
-          String(farmId),
+          farmId,
           fullName,
           finalStock,
           "kg",
@@ -261,8 +296,8 @@ export default function InventoryScreen() {
       } else {
         Alert.alert("¡Éxito!", "Nuevo insumo guardado en la bodega.");
       }
-    } catch (err: any) {
-      console.error("Error al guardar:", err.message);
+    } catch (err: unknown) {
+      console.error("Error al guardar:", getErrorMessage(err));
       Alert.alert("Error de red", "No se pudo sincronizar con la nube.");
     }
   };
@@ -306,8 +341,8 @@ export default function InventoryScreen() {
                 "Eliminado",
                 "El insumo ha sido retirado del inventario.",
               );
-            } catch (err: any) {
-              console.error("Error al eliminar:", err.message);
+            } catch (err: unknown) {
+              console.error("Error al eliminar:", getErrorMessage(err));
               Alert.alert("Error", "No se pudo eliminar el insumo.");
             }
           },
@@ -326,7 +361,7 @@ export default function InventoryScreen() {
   };
 
   // Función para abrir el modal al tocar un producto específico
-  const handleEditProduct = (bodega: string, product: any) => {
+  const handleEditProduct = (bodega: string, product: GroupedInventoryItem) => {
     setEditingId(product.id);
     setBodegaName(bodega);
     setInsumoName(product.insumoName);
@@ -352,7 +387,7 @@ export default function InventoryScreen() {
         </TouchableOpacity>
       </View>
 
-      <FlatList
+      <FlatList<InventoryGroup>
         data={groupedInventory}
         contentContainerStyle={{ padding: 20, paddingBottom: 100 }}
         keyExtractor={(item) => item.bodegaName}
@@ -382,7 +417,7 @@ export default function InventoryScreen() {
 
             {/* Lista de Productos dentro de esta Bodega */}
             <View style={styles.productsContainer}>
-              {item.items.map((prod: any, index: number) => (
+              {item.items.map((prod, index: number) => (
                 <TouchableOpacity
                   key={prod.id}
                   style={[
